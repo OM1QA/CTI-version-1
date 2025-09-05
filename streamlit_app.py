@@ -5,10 +5,19 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import requests
 import json
-from src.ingest import CISAKEVIngester, OTXIngester, AbuseCHIngester
-from src.scoring import RiskScorer
-from src.utils import format_date, get_severity_color
+import sys
 import os
+
+# Add the src directory to Python path
+sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+
+try:
+    from ingest import CISAKEVIngester, OTXIngester, AbuseCHIngester
+    from scoring import RiskScorer
+    from utils import format_date, get_severity_color
+except ImportError as e:
+    st.error(f"Import error: {e}")
+    st.stop()
 
 # Page config
 st.set_page_config(
