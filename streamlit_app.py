@@ -5,19 +5,7 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import requests
 import json
-import sys
-import os
-
-# Add the src directory to Python path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
-
-try:
-    from ingest import CISAKEVIngester, OTXIngester, AbuseCHIngester
-    from scoring import RiskScorer
-    from utils import format_date, get_severity_color
-except ImportError as e:
-    st.error(f"Import error: {e}")
-    st.stop()
+import time
 
 # Page config
 st.set_page_config(
@@ -51,75 +39,287 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Utility Functions
+def format_date(date_obj):
+    """Format date object to readable string"""
+    if isinstance(date_obj, str):
+        return date_obj
+    return date_obj.strftime('%Y-%m-%d') if date_obj else 'Unknown'
+
+def get_severity_color(severity):
+    """Get color code for severity levels"""
+    colors = {
+        'Critical': '#dc3545',
+        'High': '#fd7e14',
+        'Medium': '#ffc107',
+        'Low': '#28a745'
+    }
+    return colors.get(severity, '#6c757d')
+
+# Data Ingestion Classes
+class BaseIngester:
+    """Base class for threat intelligence ingesters"""
+    def __init__(self):
+        self.source_name = "Base"
+        
+    def fetch_data(self):
+        """Override this method in child classes"""
+        return []
+
+class CISAKEVIngester(BaseIngester):
+    """Ingest CISA Known Exploited Vulnerabilities"""
+    def __init__(self):
+        super().__init__()
+        self.source_name = "CISA KEV"
+        self.api_url = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+    
+    def fetch_data(self):
+        """Fetch CISA KEV data"""
+        try:
+            response = requests.get(self.api_url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            # Convert to DataFrame
+            vulns = []
+            for vuln in data.get('vulnerabilities', [])[:50]:  # Limit for demo
+                vulns.append({
+                    'cve_id': vuln.get('cveID', 'N/A'),
+                    'product': vuln.get('product', 'Unknown'),
+                    'vendor': vuln.get('vendorProject', 'Unknown'),
+                    'severity': 'Critical',  # CISA KEV are all critical
+                    'cvss_score': 9.0,  # Default high score for KEV
+                    'date_added': datetime.strptime(vuln.get('dateAdded', '2024-01-01'), '%Y-%m-%d'),
+                    'description': vuln.get('shortDescription', 'No description available'),
+                    'source': 'CISA KEV'
+                })
+            
+            return pd.DataFrame(vulns)
+            
+        except Exception as e:
+            st.warning(f"Failed to fetch CISA KEV data: {str(e)}. Using sample data.")
+            return self.get_sample_vulns()
+    
+    def get_sample_vulns(self):
+        """Fallback sample vulnerability data"""
+        return pd.DataFrame({
+            'cve_id': ['CVE-2024-0001', 'CVE-2024-0002', 'CVE-2024-0003'],
+            'product': ['Microsoft Exchange', 'Apache Struts', 'WordPress Plugin'],
+            'vendor': ['Microsoft', 'Apache', 'WordPress'],
+            'severity': ['Critical', 'High', 'High'],
+            'cvss_score': [9.8, 8.1, 7.5],
+            'date_added': [datetime.now() - timedelta(days=1), datetime.now() - timedelta(days=2), datetime.now() - timedelta(days=3)],
+            'description': ['Remote code execution in Exchange Server', 'SQL injection in Struts framework', 'XSS vulnerability in popular plugin'],
+            'source': ['CISA KEV', 'CISA KEV', 'CISA KEV']
+        })
+
+class OTXIngester(BaseIngester):
+    """Ingest AlienVault OTX threat intelligence"""
+    def __init__(self):
+        super().__init__()
+        self.source_name = "OTX"
+        self.base_url = "https://otx.alienvault.com/api/v1"
+        self.api_key = st.secrets.get("OTX_API_KEY", "")
+    
+    def fetch_data(self):
+        """Fetch OTX indicators"""
+        if not self.api_key:
+            st.warning("OTX API key not found. Using sample data.")
+            return self.get_sample_iocs()
+        
+        try:
+            headers = {
+                'X-OTX-API-KEY': self.api_key,
+                'User-Agent': 'SME-TIP/1.0'
+            }
+            
+            # Fetch recent pulses (threat intelligence reports)
+            pulses_url = f"{self.base_url}/pulses/subscribed"
+            params = {
+                'limit': 20,
+                'page': 1
+            }
+            
+            response = requests.get(pulses_url, headers=headers, params=params, timeout=10)
+            response.raise_for_status()
+            pulses_data = response.json()
+            
+            # Extract indicators from pulses
+            indicators = []
+            for pulse in pulses_data.get('results', [])[:10]:  # Limit for demo
+                for indicator in pulse.get('indicators', [])[:5]:  # 5 per pulse
+                    indicators.append({
+                        'indicator': indicator.get('indicator', 'N/A'),
+                        'type': indicator.get('type', 'Unknown'),
+                        'threat_type': self.classify_threat_type(pulse.get('name', '')),
+                        'confidence': min(85 + len(pulse.get('references', [])) * 5, 100),  # Score based on references
+                        'first_seen': self.parse_date(indicator.get('created', pulse.get('created', ''))),
+                        'source': 'OTX',
+                        'pulse_name': pulse.get('name', 'Unknown Pulse')
+                    })
+            
+            return pd.DataFrame(indicators[:30])  # Limit total indicators
+            
+        except Exception as e:
+            st.warning(f"Failed to fetch OTX data: {str(e)}. Using sample data.")
+            return self.get_sample_iocs()
+    
+    def classify_threat_type(self, pulse_name):
+        """Classify threat type based on pulse name"""
+        pulse_lower = pulse_name.lower()
+        if any(word in pulse_lower for word in ['ransomware', 'ransom']):
+            return 'Ransomware'
+        elif any(word in pulse_lower for word in ['phishing', 'phish']):
+            return 'Phishing'
+        elif any(word in pulse_lower for word in ['malware', 'trojan', 'backdoor']):
+            return 'Malware C2'
+        elif any(word in pulse_lower for word in ['botnet', 'bot']):
+            return 'Botnet'
+        elif any(word in pulse_lower for word in ['apt', 'advanced']):
+            return 'APT Activity'
+        else:
+            return 'Suspicious Activity'
+    
+    def parse_date(self, date_string):
+        """Parse various date formats"""
+        try:
+            if 'T' in date_string:
+                return datetime.fromisoformat(date_string.replace('Z', '+00:00'))
+            else:
+                return datetime.strptime(date_string, '%Y-%m-%d')
+        except:
+            return datetime.now() - timedelta(days=1)
+    
+    def get_sample_iocs(self):
+        """Fallback sample IOC data"""
+        return pd.DataFrame({
+            'indicator': ['192.168.1.100', 'malware.example.com', 'bad-hash-123'],
+            'type': ['IPv4', 'hostname', 'FileHash-SHA256'],
+            'threat_type': ['Malware C2', 'Phishing', 'Ransomware'],
+            'confidence': [85, 92, 78],
+            'first_seen': [datetime.now() - timedelta(days=2), datetime.now() - timedelta(days=1), datetime.now() - timedelta(days=4)],
+            'source': ['OTX', 'OTX', 'OTX'],
+            'pulse_name': ['Sample Malware Campaign', 'Phishing Infrastructure', 'Ransomware IOCs']
+        })
+
+class AbuseCHIngester(BaseIngester):
+    """Ingest Abuse.ch threat intelligence"""
+    def __init__(self):
+        super().__init__()
+        self.source_name = "Abuse.ch"
+    
+    def fetch_data(self):
+        """Fetch sample Abuse.ch indicators (will implement real API later)"""
+        return pd.DataFrame({
+            'indicator': ['10.0.0.50', 'phishing.test.com', 'botnet.example.org'],
+            'type': ['IPv4', 'hostname', 'hostname'],
+            'threat_type': ['Botnet', 'Phishing', 'Botnet'],
+            'confidence': [68, 95, 73],
+            'first_seen': [datetime.now() - timedelta(days=6), datetime.now() - timedelta(days=1), datetime.now() - timedelta(days=3)],
+            'source': ['Abuse.ch', 'Abuse.ch', 'Abuse.ch'],
+            'campaign': ['Emotet', 'Generic Phishing', 'Qakbot']
+        })
+
+# Risk Scoring Engine
+class RiskScorer:
+    """Calculate risk scores for threats"""
+    def __init__(self):
+        self.threat_severity_map = {
+            'Ransomware': 100,
+            'APT Activity': 95,
+            'Malware C2': 90,
+            'Credential Theft': 85,
+            'Phishing': 80,
+            'Botnet': 75,
+            'Suspicious Activity': 60
+        }
+    
+    def score_vulnerabilities(self, vuln_df):
+        """Score vulnerabilities based on CVSS and other factors"""
+        if vuln_df.empty:
+            return vuln_df
+        
+        # Calculate risk score
+        def calculate_vuln_risk(row):
+            base_score = row.get('cvss_score', 5.0) * 10  # Scale to 100
+            
+            # CISA KEV gets automatic high score
+            if row.get('source') == 'CISA KEV':
+                base_score = max(base_score, 95)
+            
+            # Age factor (newer = higher risk)
+            days_old = (datetime.now() - row.get('date_added', datetime.now())).days
+            age_factor = max(1.0 - (days_old / 365), 0.5)  # Reduce over time
+            
+            return min(int(base_score * age_factor), 100)
+        
+        vuln_df = vuln_df.copy()
+        vuln_df['risk_score'] = vuln_df.apply(calculate_vuln_risk, axis=1)
+        return vuln_df
+    
+    def score_indicators(self, ioc_df):
+        """Score IOCs based on confidence and threat type"""
+        if ioc_df.empty:
+            return ioc_df
+        
+        def calculate_ioc_risk(row):
+            confidence = row.get('confidence', 50)
+            threat_type = row.get('threat_type', 'Suspicious Activity')
+            
+            # Get threat type severity
+            threat_severity = self.threat_severity_map.get(threat_type, 50)
+            
+            # Calculate composite risk score
+            risk_score = (confidence * 0.6) + (threat_severity * 0.4)
+            
+            # Freshness factor (newer = higher risk)
+            days_old = (datetime.now() - row.get('first_seen', datetime.now())).days
+            if days_old <= 7:
+                risk_score *= 1.1  # 10% boost for recent
+            elif days_old <= 30:
+                risk_score *= 1.05  # 5% boost for recent
+            
+            return min(int(risk_score), 100)
+        
+        ioc_df = ioc_df.copy()
+        ioc_df['risk_score'] = ioc_df.apply(calculate_ioc_risk, axis=1)
+        return ioc_df
+
 @st.cache_data(ttl=3600)  # Cache for 1 hour
 def load_threat_data():
     """Load and process threat intelligence data"""
-    try:
-        # Initialize ingesters
-        cisa_ingester = CISAKEVIngester()
-        otx_ingester = OTXIngester()
-        abuse_ingester = AbuseCHIngester()
+    with st.spinner("Loading threat intelligence data..."):
+        try:
+            # Initialize ingesters
+            cisa_ingester = CISAKEVIngester()
+            otx_ingester = OTXIngester()
+            abuse_ingester = AbuseCHIngester()
+            
+            # Ingest data
+            cisa_data = cisa_ingester.fetch_data()
+            otx_data = otx_ingester.fetch_data()
+            abuse_data = abuse_ingester.fetch_data()
+            
+            # Initialize risk scorer
+            scorer = RiskScorer()
+            
+            # Process and score data
+            processed_data = {
+                'vulnerabilities': scorer.score_vulnerabilities(cisa_data),
+                'indicators': scorer.score_indicators(pd.concat([otx_data, abuse_data], ignore_index=True) if not otx_data.empty or not abuse_data.empty else pd.DataFrame()),
+                'last_updated': datetime.now()
+            }
+            
+            return processed_data
         
-        # Ingest data
-        cisa_data = cisa_ingester.fetch_data()
-        otx_data = otx_ingester.fetch_data()
-        abuse_data = abuse_ingester.fetch_data()
-        
-        # Initialize risk scorer
-        scorer = RiskScorer()
-        
-        # Process and score data
-        processed_data = {
-            'vulnerabilities': scorer.score_vulnerabilities(cisa_data),
-            'indicators': scorer.score_indicators(otx_data + abuse_data),
-            'last_updated': datetime.now()
-        }
-        
-        return processed_data
-    
-    except Exception as e:
-        st.error(f"Error loading threat data: {str(e)}")
-        # Return sample data for demo
-        return get_sample_data()
-
-def get_sample_data():
-    """Generate sample data for demo purposes"""
-    sample_vulns = pd.DataFrame({
-        'cve_id': ['CVE-2024-0001', 'CVE-2024-0002', 'CVE-2024-0003', 'CVE-2024-0004', 'CVE-2024-0005'],
-        'product': ['Microsoft Exchange', 'Apache Struts', 'WordPress Plugin', 'Cisco IOS', 'VMware vCenter'],
-        'vendor': ['Microsoft', 'Apache', 'WordPress', 'Cisco', 'VMware'],
-        'severity': ['Critical', 'High', 'High', 'Medium', 'Critical'],
-        'cvss_score': [9.8, 8.1, 7.5, 6.5, 9.1],
-        'date_added': [datetime.now() - timedelta(days=1), datetime.now() - timedelta(days=2), 
-                      datetime.now() - timedelta(days=3), datetime.now() - timedelta(days=5),
-                      datetime.now() - timedelta(days=7)],
-        'description': [
-            'Remote code execution in Exchange Server',
-            'SQL injection in Struts framework',
-            'XSS vulnerability in popular plugin',
-            'Buffer overflow in IOS software',
-            'Authentication bypass in vCenter'
-        ],
-        'risk_score': [95, 82, 75, 45, 91]
-    })
-    
-    sample_iocs = pd.DataFrame({
-        'indicator': ['192.168.1.100', 'malware.example.com', 'bad-hash-123', '10.0.0.50', 'phishing.test.com'],
-        'type': ['IP', 'Domain', 'Hash', 'IP', 'Domain'],
-        'threat_type': ['Malware C2', 'Phishing', 'Ransomware', 'Botnet', 'Credential Theft'],
-        'confidence': [85, 92, 78, 68, 95],
-        'first_seen': [datetime.now() - timedelta(days=2), datetime.now() - timedelta(days=1),
-                      datetime.now() - timedelta(days=4), datetime.now() - timedelta(days=6),
-                      datetime.now() - timedelta(days=1)],
-        'source': ['OTX', 'Abuse.ch', 'OTX', 'Abuse.ch', 'OTX'],
-        'risk_score': [85, 92, 78, 68, 95]
-    })
-    
-    return {
-        'vulnerabilities': sample_vulns,
-        'indicators': sample_iocs,
-        'last_updated': datetime.now()
-    }
+        except Exception as e:
+            st.error(f"Error loading threat data: {str(e)}")
+            # Return empty data structure
+            return {
+                'vulnerabilities': pd.DataFrame(),
+                'indicators': pd.DataFrame(),
+                'last_updated': datetime.now()
+            }
 
 def main():
     st.title("🛡️ SME Threat Intelligence Platform")
@@ -127,6 +327,11 @@ def main():
     
     # Load data
     data = load_threat_data()
+    
+    # Check if we have data
+    if data['vulnerabilities'].empty and data['indicators'].empty:
+        st.error("Unable to load threat intelligence data. Please check your API configuration.")
+        st.stop()
     
     # Sidebar filters
     st.sidebar.header("🔍 Filters")
@@ -158,12 +363,12 @@ def main():
     filtered_vulns = data['vulnerabilities'][
         (data['vulnerabilities']['severity'].isin(severity_filter)) &
         (data['vulnerabilities']['date_added'] >= datetime.now() - timedelta(days=days_back))
-    ]
+    ] if not data['vulnerabilities'].empty else pd.DataFrame()
     
     filtered_iocs = data['indicators'][
         (data['indicators']['confidence'] >= confidence_filter) &
         (data['indicators']['first_seen'] >= datetime.now() - timedelta(days=days_back))
-    ]
+    ] if not data['indicators'].empty else pd.DataFrame()
     
     # Executive Summary Section
     st.header("📊 Executive Summary")
@@ -171,7 +376,7 @@ def main():
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        critical_vulns = len(filtered_vulns[filtered_vulns['severity'] == 'Critical'])
+        critical_vulns = len(filtered_vulns[filtered_vulns['severity'] == 'Critical']) if not filtered_vulns.empty else 0
         st.markdown(f"""
         <div class="metric-card critical-card">
             <h3 style="margin:0; color:#dc3545;">🚨 {critical_vulns}</h3>
@@ -180,7 +385,7 @@ def main():
         """, unsafe_allow_html=True)
     
     with col2:
-        high_risk_iocs = len(filtered_iocs[filtered_iocs['risk_score'] >= 80])
+        high_risk_iocs = len(filtered_iocs[filtered_iocs['risk_score'] >= 80]) if not filtered_iocs.empty else 0
         st.markdown(f"""
         <div class="metric-card high-card">
             <h3 style="margin:0; color:#fd7e14;">⚠️ {high_risk_iocs}</h3>
@@ -219,8 +424,20 @@ def main():
     # Last updated info
     st.caption(f"Last updated: {data['last_updated'].strftime('%Y-%m-%d %H:%M:%S')}")
     
+    # Data source status
+    with st.expander("🔗 Data Source Status"):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("CISA KEV", f"{len(data['vulnerabilities'])} vulnerabilities")
+        with col2:
+            otx_count = len(data['indicators'][data['indicators']['source'] == 'OTX']) if not data['indicators'].empty else 0
+            st.metric("AlienVault OTX", f"{otx_count} indicators")
+        with col3:
+            abuse_count = len(data['indicators'][data['indicators']['source'] == 'Abuse.ch']) if not data['indicators'].empty else 0
+            st.metric("Abuse.ch", f"{abuse_count} indicators")
+    
     # Main content tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["🔍 Priority Actions", "🦠 Vulnerabilities", "🚩 Indicators", "📊 Analytics"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🎯 Priority Actions", "🦠 Vulnerabilities", "🚩 Indicators", "📊 Analytics"])
     
     with tab1:
         st.subheader("🎯 Priority Actions for Your Team")
@@ -240,8 +457,8 @@ def main():
                     with col2:
                         st.write(f"**Severity:** {vuln['severity']}")
                         st.write(f"**Date Added:** {format_date(vuln['date_added'])}")
-                        if st.button(f"Block IOCs for {vuln['cve_id']}", key=f"block_{vuln['cve_id']}"):
-                            st.success("IOCs would be pushed to security tools (Demo)")
+                        if st.button(f"Track Patching", key=f"patch_{vuln['cve_id']}"):
+                            st.success("Added to patch management queue (Demo)")
         
         # Top IOCs to block
         if not filtered_iocs.empty:
@@ -273,6 +490,15 @@ def main():
             )
             st.plotly_chart(fig_severity, use_container_width=True)
             
+            # Risk score distribution
+            fig_risk = px.histogram(
+                filtered_vulns,
+                x='risk_score',
+                nbins=20,
+                title='Vulnerability Risk Score Distribution'
+            )
+            st.plotly_chart(fig_risk, use_container_width=True)
+            
             # Detailed vulnerability table
             st.markdown("### 📋 Detailed Vulnerability List")
             vuln_display = filtered_vulns[['cve_id', 'product', 'vendor', 'severity', 'cvss_score', 'risk_score', 'date_added']]
@@ -295,17 +521,27 @@ def main():
             )
             st.plotly_chart(fig_types, use_container_width=True)
             
-            # IOC timeline
-            ioc_timeline = filtered_iocs.groupby(filtered_iocs['first_seen'].dt.date).size().reset_index()
-            ioc_timeline.columns = ['Date', 'Count']
-            
-            fig_timeline = px.line(
-                ioc_timeline,
-                x='Date',
-                y='Count',
-                title='New IOCs Over Time'
+            # Threat type distribution
+            threat_counts = filtered_iocs['threat_type'].value_counts()
+            fig_threats = px.pie(
+                values=threat_counts.values,
+                names=threat_counts.index,
+                title="Threat Type Distribution"
             )
-            st.plotly_chart(fig_timeline, use_container_width=True)
+            st.plotly_chart(fig_threats, use_container_width=True)
+            
+            # IOC timeline
+            if 'first_seen' in filtered_iocs.columns:
+                ioc_timeline = filtered_iocs.groupby(filtered_iocs['first_seen'].dt.date).size().reset_index()
+                ioc_timeline.columns = ['Date', 'Count']
+                
+                fig_timeline = px.line(
+                    ioc_timeline,
+                    x='Date',
+                    y='Count',
+                    title='New IOCs Over Time'
+                )
+                st.plotly_chart(fig_timeline, use_container_width=True)
             
             # Detailed IOC table
             st.markdown("### 📋 Detailed IOC List")
@@ -320,15 +556,16 @@ def main():
         col1, col2 = st.columns(2)
         
         with col1:
-            # Risk score distribution
+            # Risk score distribution for vulnerabilities
             if not filtered_vulns.empty:
-                fig_risk_dist = px.histogram(
+                fig_vuln_risk = px.histogram(
                     filtered_vulns,
                     x='risk_score',
                     nbins=20,
-                    title='Vulnerability Risk Score Distribution'
+                    title='Vulnerability Risk Score Distribution',
+                    color_discrete_sequence=['#dc3545']
                 )
-                st.plotly_chart(fig_risk_dist, use_container_width=True)
+                st.plotly_chart(fig_vuln_risk, use_container_width=True)
         
         with col2:
             # Source reliability
@@ -338,7 +575,9 @@ def main():
                     source_confidence,
                     x='source',
                     y='confidence',
-                    title='Average Confidence by Source'
+                    title='Average Confidence by Source',
+                    color='confidence',
+                    color_continuous_scale='Viridis'
                 )
                 st.plotly_chart(fig_source, use_container_width=True)
         
@@ -346,23 +585,27 @@ def main():
         st.markdown("### 🌍 Threat Landscape Overview")
         
         threat_summary = {
-            'Total Vulnerabilities': len(data['vulnerabilities']),
-            'Critical/High Severity': len(data['vulnerabilities'][data['vulnerabilities']['severity'].isin(['Critical', 'High'])]),
-            'Total IOCs': len(data['indicators']),
-            'High Confidence IOCs': len(data['indicators'][data['indicators']['confidence'] >= 80]),
+            'Total Vulnerabilities': len(data['vulnerabilities']) if not data['vulnerabilities'].empty else 0,
+            'Critical/High Severity': len(data['vulnerabilities'][data['vulnerabilities']['severity'].isin(['Critical', 'High'])]) if not data['vulnerabilities'].empty else 0,
+            'Total IOCs': len(data['indicators']) if not data['indicators'].empty else 0,
+            'High Confidence IOCs': len(data['indicators'][data['indicators']['confidence'] >= 80]) if not data['indicators'].empty else 0,
             'Unique Threat Types': data['indicators']['threat_type'].nunique() if not data['indicators'].empty else 0,
-            'Data Sources': len(set(data['indicators']['source'])) if not data['indicators'].empty else 0
+            'Data Sources Active': len(set(data['indicators']['source'])) if not data['indicators'].empty else 0
         }
         
         summary_df = pd.DataFrame(list(threat_summary.items()), columns=['Metric', 'Value'])
         st.dataframe(summary_df, use_container_width=True, hide_index=True)
+        
+        # Risk posture over time (placeholder for future enhancement)
+        st.markdown("### 📈 Risk Posture Trend (Coming Soon)")
+        st.info("Historical risk tracking will be available in the next update.")
     
     # Footer
     st.markdown("---")
     st.markdown("""
     <div style="text-align: center; color: #666;">
         <p>🛡️ SME Threat Intelligence Platform MVP | Built with ❤️ for small businesses</p>
-        <p>Data sources: CISA KEV, AlienVault OTX, Abuse.ch | Auto-refresh: Every hour</p>
+        <p>Data sources: CISA KEV (Live), AlienVault OTX (Live), Abuse.ch (Sample) | Auto-refresh: Every hour</p>
     </div>
     """, unsafe_allow_html=True)
 
