@@ -208,7 +208,7 @@ class AbuseCHIngester(BaseIngester):
         super().__init__()
         self.source_name = "Abuse.ch"
         self.apis = {
-            'urlhaus': 'https://urlhaus-api.abuse.ch/v1/urls/recent/',
+            'urlhaus': 'https://urlhaus-api.abuse.ch/v1/urls/recent/limit/20/',
             'threatfox': 'https://threatfox-api.abuse.ch/api/v1/',
             'malwarebazaar': 'https://mb-api.abuse.ch/api/v1/'
         }
@@ -226,8 +226,11 @@ class AbuseCHIngester(BaseIngester):
             threatfox_data = self.fetch_threatfox()
             all_indicators.extend(threatfox_data)
             
-            # Limit total indicators for demo
-            return pd.DataFrame(all_indicators[:20])
+            # Return combined data
+            if all_indicators:
+                return pd.DataFrame(all_indicators[:25])  # Limit total indicators
+            else:
+                return self.get_sample_data()
             
         except Exception as e:
             st.warning(f"Failed to fetch Abuse.ch data: {str(e)}. Using sample data.")
@@ -236,22 +239,26 @@ class AbuseCHIngester(BaseIngester):
     def fetch_urlhaus(self):
         """Fetch malicious URLs from URLhaus"""
         try:
-            # Get recent malicious URLs (last 3 days)
-            data = {'days': 3}
-            response = requests.post(self.apis['urlhaus'], data=data, timeout=10)
+            # URLhaus recent URLs endpoint (no authentication needed)
+            response = requests.get(self.apis['urlhaus'], timeout=15)
             response.raise_for_status()
             
             result = response.json()
             indicators = []
             
-            for url_entry in result.get('urls', [])[:10]:  # Limit to 10
+            for url_entry in result.get('urls', [])[:12]:  # Limit to 12
                 # Extract domain from URL
                 url = url_entry.get('url', '')
                 try:
                     from urllib.parse import urlparse
-                    domain = urlparse(url).netloc
+                    parsed = urlparse(url)
+                    domain = parsed.netloc if parsed.netloc else url
                 except:
-                    domain = url
+                    domain = url.split('/')[0] if '/' in url else url
+                
+                # Skip empty domains
+                if not domain or domain == '':
+                    continue
                 
                 indicators.append({
                     'indicator': domain,
@@ -260,8 +267,8 @@ class AbuseCHIngester(BaseIngester):
                     'confidence': self.calculate_urlhaus_confidence(url_entry),
                     'first_seen': self.parse_abuse_date(url_entry.get('date_added', '')),
                     'source': 'Abuse.ch URLhaus',
-                    'campaign': url_entry.get('threat', 'Unknown'),
-                    'url': url
+                    'campaign': url_entry.get('threat', 'Malicious URL'),
+                    'url_status': url_entry.get('url_status', 'unknown')
                 })
             
             return indicators
@@ -273,17 +280,20 @@ class AbuseCHIngester(BaseIngester):
     def fetch_threatfox(self):
         """Fetch IOCs from ThreatFox"""
         try:
-            # Get recent IOCs (last 3 days)
+            # ThreatFox get_iocs endpoint
             payload = {
                 'query': 'get_iocs',
-                'days': 3
+                'days': 7  # Get IOCs from last 7 days
             }
             
             response = requests.post(
                 self.apis['threatfox'], 
                 json=payload,
-                headers={'Content-Type': 'application/json'},
-                timeout=10
+                headers={
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'SME-TIP/1.0'
+                },
+                timeout=15
             )
             response.raise_for_status()
             
@@ -291,17 +301,23 @@ class AbuseCHIngester(BaseIngester):
             indicators = []
             
             if result.get('query_status') == 'ok':
-                for ioc_entry in result.get('data', [])[:10]:  # Limit to 10
+                for ioc_entry in result.get('data', [])[:12]:  # Limit to 12
+                    ioc_value = ioc_entry.get('ioc', '').strip()
+                    if not ioc_value:
+                        continue
+                        
                     indicators.append({
-                        'indicator': ioc_entry.get('ioc', ''),
+                        'indicator': ioc_value,
                         'type': self.normalize_ioc_type(ioc_entry.get('ioc_type', '')),
                         'threat_type': self.classify_threatfox_threat(ioc_entry.get('malware', '')),
                         'confidence': self.calculate_threatfox_confidence(ioc_entry),
                         'first_seen': self.parse_abuse_date(ioc_entry.get('first_seen', '')),
                         'source': 'Abuse.ch ThreatFox',
-                        'campaign': ioc_entry.get('malware', 'Unknown'),
-                        'tags': ioc_entry.get('tags', [])
+                        'campaign': ioc_entry.get('malware', 'Unknown Malware'),
+                        'confidence_level': ioc_entry.get('confidence_level', 50)
                     })
+            else:
+                st.info(f"ThreatFox query status: {result.get('query_status', 'unknown')}")
             
             return indicators
             
