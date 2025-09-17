@@ -207,9 +207,192 @@ class AbuseCHIngester(BaseIngester):
     def __init__(self):
         super().__init__()
         self.source_name = "Abuse.ch"
+        self.apis = {
+            'urlhaus': 'https://urlhaus-api.abuse.ch/v1/urls/recent/',
+            'threatfox': 'https://threatfox-api.abuse.ch/api/v1/',
+            'malwarebazaar': 'https://mb-api.abuse.ch/api/v1/'
+        }
     
     def fetch_data(self):
-        """Fetch sample Abuse.ch indicators (will implement real API later)"""
+        """Fetch real Abuse.ch indicators from multiple sources"""
+        try:
+            all_indicators = []
+            
+            # Fetch from URLhaus (malicious URLs)
+            urlhaus_data = self.fetch_urlhaus()
+            all_indicators.extend(urlhaus_data)
+            
+            # Fetch from ThreatFox (IOCs)
+            threatfox_data = self.fetch_threatfox()
+            all_indicators.extend(threatfox_data)
+            
+            # Limit total indicators for demo
+            return pd.DataFrame(all_indicators[:20])
+            
+        except Exception as e:
+            st.warning(f"Failed to fetch Abuse.ch data: {str(e)}. Using sample data.")
+            return self.get_sample_data()
+    
+    def fetch_urlhaus(self):
+        """Fetch malicious URLs from URLhaus"""
+        try:
+            # Get recent malicious URLs (last 3 days)
+            data = {'days': 3}
+            response = requests.post(self.apis['urlhaus'], data=data, timeout=10)
+            response.raise_for_status()
+            
+            result = response.json()
+            indicators = []
+            
+            for url_entry in result.get('urls', [])[:10]:  # Limit to 10
+                # Extract domain from URL
+                url = url_entry.get('url', '')
+                try:
+                    from urllib.parse import urlparse
+                    domain = urlparse(url).netloc
+                except:
+                    domain = url
+                
+                indicators.append({
+                    'indicator': domain,
+                    'type': 'hostname',
+                    'threat_type': self.classify_urlhaus_threat(url_entry.get('tags', [])),
+                    'confidence': self.calculate_urlhaus_confidence(url_entry),
+                    'first_seen': self.parse_abuse_date(url_entry.get('date_added', '')),
+                    'source': 'Abuse.ch URLhaus',
+                    'campaign': url_entry.get('threat', 'Unknown'),
+                    'url': url
+                })
+            
+            return indicators
+            
+        except Exception as e:
+            st.warning(f"URLhaus API error: {str(e)}")
+            return []
+    
+    def fetch_threatfox(self):
+        """Fetch IOCs from ThreatFox"""
+        try:
+            # Get recent IOCs (last 3 days)
+            payload = {
+                'query': 'get_iocs',
+                'days': 3
+            }
+            
+            response = requests.post(
+                self.apis['threatfox'], 
+                json=payload,
+                headers={'Content-Type': 'application/json'},
+                timeout=10
+            )
+            response.raise_for_status()
+            
+            result = response.json()
+            indicators = []
+            
+            if result.get('query_status') == 'ok':
+                for ioc_entry in result.get('data', [])[:10]:  # Limit to 10
+                    indicators.append({
+                        'indicator': ioc_entry.get('ioc', ''),
+                        'type': self.normalize_ioc_type(ioc_entry.get('ioc_type', '')),
+                        'threat_type': self.classify_threatfox_threat(ioc_entry.get('malware', '')),
+                        'confidence': self.calculate_threatfox_confidence(ioc_entry),
+                        'first_seen': self.parse_abuse_date(ioc_entry.get('first_seen', '')),
+                        'source': 'Abuse.ch ThreatFox',
+                        'campaign': ioc_entry.get('malware', 'Unknown'),
+                        'tags': ioc_entry.get('tags', [])
+                    })
+            
+            return indicators
+            
+        except Exception as e:
+            st.warning(f"ThreatFox API error: {str(e)}")
+            return []
+    
+    def classify_urlhaus_threat(self, tags):
+        """Classify threat type based on URLhaus tags"""
+        tags_str = ' '.join(tags).lower()
+        if any(word in tags_str for word in ['emotet', 'trickbot', 'qakbot']):
+            return 'Banking Trojan'
+        elif any(word in tags_str for word in ['ransomware', 'lockbit', 'ryuk']):
+            return 'Ransomware'
+        elif any(word in tags_str for word in ['phishing', 'phish']):
+            return 'Phishing'
+        elif any(word in tags_str for word in ['malware', 'trojan']):
+            return 'Malware C2'
+        else:
+            return 'Malicious Infrastructure'
+    
+    def classify_threatfox_threat(self, malware_name):
+        """Classify threat type based on malware family"""
+        malware_lower = malware_name.lower()
+        if any(word in malware_lower for word in ['emotet', 'trickbot', 'qakbot', 'banking']):
+            return 'Banking Trojan'
+        elif any(word in malware_lower for word in ['lockbit', 'conti', 'ryuk', 'ransom']):
+            return 'Ransomware'
+        elif any(word in malware_lower for word in ['cobalt', 'beacon']):
+            return 'APT Activity'
+        elif any(word in malware_lower for word in ['stealer', 'info']):
+            return 'Credential Theft'
+        else:
+            return 'Malware C2'
+    
+    def calculate_urlhaus_confidence(self, url_entry):
+        """Calculate confidence score for URLhaus entries"""
+        base_confidence = 75
+        
+        # Boost confidence based on threat status
+        if url_entry.get('url_status') == 'online':
+            base_confidence += 15
+        
+        # Boost based on number of tags
+        tags_count = len(url_entry.get('tags', []))
+        base_confidence += min(tags_count * 2, 10)
+        
+        return min(base_confidence, 95)
+    
+    def calculate_threatfox_confidence(self, ioc_entry):
+        """Calculate confidence score for ThreatFox entries"""
+        base_confidence = 80
+        
+        # Boost based on confidence rating from ThreatFox
+        confidence_rating = ioc_entry.get('confidence_level', 50)
+        base_confidence = max(base_confidence, confidence_rating)
+        
+        # Boost based on number of tags
+        tags_count = len(ioc_entry.get('tags', []))
+        base_confidence += min(tags_count, 10)
+        
+        return min(base_confidence, 98)
+    
+    def normalize_ioc_type(self, ioc_type):
+        """Normalize IOC types to standard format"""
+        type_mapping = {
+            'ip:port': 'IPv4',
+            'domain': 'hostname',
+            'url': 'URL',
+            'md5_hash': 'FileHash-MD5',
+            'sha1_hash': 'FileHash-SHA1',
+            'sha256_hash': 'FileHash-SHA256'
+        }
+        return type_mapping.get(ioc_type.lower(), ioc_type)
+    
+    def parse_abuse_date(self, date_string):
+        """Parse Abuse.ch date format"""
+        try:
+            if not date_string:
+                return datetime.now() - timedelta(days=1)
+            
+            # Handle different date formats from Abuse.ch
+            if 'T' in date_string:
+                return datetime.fromisoformat(date_string.replace('Z', '+00:00'))
+            else:
+                return datetime.strptime(date_string, '%Y-%m-%d %H:%M:%S')
+        except:
+            return datetime.now() - timedelta(days=1)
+    
+    def get_sample_data(self):
+        """Fallback sample data"""
         return pd.DataFrame({
             'indicator': ['10.0.0.50', 'phishing.test.com', 'botnet.example.org'],
             'type': ['IPv4', 'hostname', 'hostname'],
