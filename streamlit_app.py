@@ -140,7 +140,7 @@ class OTXIngester(BaseIngester):
                 'page': 1
             }
             
-            response = requests.get(pulses_url, headers=headers, params=params, timeout=30)
+            response = requests.get(pulses_url, headers=headers, params=params, timeout=15)  # Reduced timeout
             response.raise_for_status()
             pulses_data = response.json()
             
@@ -262,18 +262,29 @@ class AbuseCHIngester(BaseIngester):
         try:
             all_indicators = []
             
-            # Fetch from ThreatFox (IOCs)
-            threatfox_data = self.fetch_threatfox()
-            all_indicators.extend(threatfox_data)
+            # Fetch from ThreatFox (IOCs) with timeout protection
+            try:
+                st.write("🔍 Fetching ThreatFox IOCs...")
+                threatfox_data = self.fetch_threatfox()
+                all_indicators.extend(threatfox_data)
+                st.write(f"✅ ThreatFox: {len(threatfox_data)} IOCs loaded")
+            except Exception as e:
+                st.warning(f"ThreatFox failed: {str(e)}")
             
-            # Fetch from URLhaus (malicious URLs)
-            urlhaus_data = self.fetch_urlhaus()
-            all_indicators.extend(urlhaus_data)
+            # Fetch from URLhaus (malicious URLs) with timeout protection
+            try:
+                st.write("🔍 Fetching URLhaus domains...")
+                urlhaus_data = self.fetch_urlhaus()
+                all_indicators.extend(urlhaus_data)
+                st.write(f"✅ URLhaus: {len(urlhaus_data)} domains loaded")
+            except Exception as e:
+                st.warning(f"URLhaus failed: {str(e)}")
             
             # Return combined data
             if all_indicators:
                 return pd.DataFrame(all_indicators[:30])  # Increased limit for both sources
             else:
+                st.warning("No Abuse.ch data available, using sample data")
                 return self.get_sample_data()
             
         except Exception as e:
@@ -299,7 +310,7 @@ class AbuseCHIngester(BaseIngester):
                 self.apis['threatfox'], 
                 json=payload,
                 headers=headers,
-                timeout=30
+                timeout=15  # Reduced from 30 to 15 seconds
             )
             response.raise_for_status()
             
@@ -350,7 +361,7 @@ class AbuseCHIngester(BaseIngester):
                 self.apis['urlhaus'],
                 json=payload,
                 headers=headers,
-                timeout=30
+                timeout=15  # Reduced from 30 to 15 seconds
             )
             response.raise_for_status()
             
@@ -522,48 +533,88 @@ class RiskScorer:
         ioc_df['risk_score'] = ioc_df.apply(calculate_ioc_risk, axis=1)
         return ioc_df
 
-@st.cache_data(ttl=3600)  # Cache for 1 hour
+@st.cache_data(ttl=3600, show_spinner=False)  # Cache for 1 hour, hide default spinner
 def load_threat_data():
     """Load and process threat intelligence data"""
-    with st.spinner("Loading threat intelligence data..."):
-        try:
-            # Initialize ingesters
-            cisa_ingester = CISAKEVIngester()
-            otx_ingester = OTXIngester()
-            abuse_ingester = AbuseCHIngester()
-            
-            # Ingest data
-            cisa_data = cisa_ingester.fetch_data()
-            otx_data = otx_ingester.fetch_data()
-            abuse_data = abuse_ingester.fetch_data()
-            
-            # Initialize risk scorer
-            scorer = RiskScorer()
-            
-            # Process and score data
-            processed_data = {
-                'vulnerabilities': scorer.score_vulnerabilities(cisa_data),
-                'indicators': scorer.score_indicators(pd.concat([otx_data, abuse_data], ignore_index=True) if not otx_data.empty or not abuse_data.empty else pd.DataFrame()),
-                'last_updated': datetime.now()
-            }
-            
-            return processed_data
+    try:
+        # Initialize ingesters
+        cisa_ingester = CISAKEVIngester()
+        otx_ingester = OTXIngester()
+        abuse_ingester = AbuseCHIngester()
         
-        except Exception as e:
-            st.error(f"Error loading threat data: {str(e)}")
-            # Return empty data structure
-            return {
-                'vulnerabilities': pd.DataFrame(),
-                'indicators': pd.DataFrame(),
-                'last_updated': datetime.now()
-            }
+        # Initialize risk scorer
+        scorer = RiskScorer()
+        
+        # Load data with progress tracking
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        # CISA KEV (usually fastest)
+        status_text.text("Loading CISA KEV vulnerabilities...")
+        progress_bar.progress(10)
+        cisa_data = cisa_ingester.fetch_data()
+        
+        # OTX (can be slow)
+        status_text.text("Loading OTX threat intelligence...")
+        progress_bar.progress(40)
+        otx_data = otx_ingester.fetch_data()
+        
+        # Abuse.ch (can be slow)
+        status_text.text("Loading Abuse.ch indicators...")
+        progress_bar.progress(70)
+        abuse_data = abuse_ingester.fetch_data()
+        
+        # Process and score data
+        status_text.text("Processing and scoring threats...")
+        progress_bar.progress(90)
+        
+        # Combine IOC data safely
+        combined_iocs = pd.DataFrame()
+        if not otx_data.empty and not abuse_data.empty:
+            combined_iocs = pd.concat([otx_data, abuse_data], ignore_index=True)
+        elif not otx_data.empty:
+            combined_iocs = otx_data
+        elif not abuse_data.empty:
+            combined_iocs = abuse_data
+        
+        processed_data = {
+            'vulnerabilities': scorer.score_vulnerabilities(cisa_data),
+            'indicators': scorer.score_indicators(combined_iocs),
+            'last_updated': datetime.now()
+        }
+        
+        # Clear progress indicators
+        progress_bar.progress(100)
+        status_text.text("✅ Threat data loaded successfully!")
+        time.sleep(1)  # Brief pause to show success
+        progress_bar.empty()
+        status_text.empty()
+        
+        return processed_data
+    
+    except Exception as e:
+        st.error(f"Error loading threat data: {str(e)}")
+        # Return minimal working data structure
+        return {
+            'vulnerabilities': pd.DataFrame(),
+            'indicators': pd.DataFrame(), 
+            'last_updated': datetime.now()
+        }
 
 def main():
     st.title("🛡️ SME Threat Intelligence Platform")
     st.markdown("**Enterprise-grade threat intelligence without enterprise costs**")
     
-    # Load data
-    data = load_threat_data()
+    # Add a quick mode toggle
+    with st.sidebar:
+        st.header("⚙️ Settings")
+        quick_mode = st.checkbox("Quick Mode (Skip slow APIs)", value=False, help="Skip OTX and Abuse.ch if they're slow")
+    
+    # Load data with optional quick mode
+    if quick_mode:
+        data = load_threat_data_quick()
+    else:
+        data = load_threat_data()
     
     # Check if we have data
     if data['vulnerabilities'].empty and data['indicators'].empty:
