@@ -76,7 +76,7 @@ class CISAKEVIngester(BaseIngester):
     def fetch_data(self):
         """Fetch CISA KEV data"""
         try:
-            response = requests.get(self.api_url, timeout=30)
+            response = requests.get(self.api_url, timeout=15)
             response.raise_for_status()
             data = response.json()
             
@@ -140,7 +140,7 @@ class OTXIngester(BaseIngester):
                 'page': 1
             }
             
-            response = requests.get(pulses_url, headers=headers, params=params, timeout=15)  # Reduced timeout
+            response = requests.get(pulses_url, headers=headers, params=params, timeout=15)
             response.raise_for_status()
             pulses_data = response.json()
             
@@ -152,7 +152,7 @@ class OTXIngester(BaseIngester):
                         'indicator': indicator.get('indicator', 'N/A'),
                         'type': indicator.get('type', 'Unknown'),
                         'threat_type': self.classify_threat_type(pulse.get('name', '')),
-                        'confidence': min(85 + len(pulse.get('references', [])) * 5, 100),  # Score based on references
+                        'confidence': min(85 + len(pulse.get('references', [])) * 5, 100),
                         'first_seen': self.parse_date(indicator.get('created', pulse.get('created', ''))),
                         'source': 'OTX',
                         'pulse_name': pulse.get('name', 'Unknown Pulse')
@@ -173,46 +173,6 @@ class OTXIngester(BaseIngester):
             return 'Phishing'
         elif any(word in pulse_lower for word in ['malware', 'trojan', 'backdoor']):
             return 'Malware C2'
-    
-    def classify_urlhaus_threat(self, tags):
-        """Classify threat type based on URLhaus tags"""
-        if not tags:
-            return 'Malware C2'
-        
-        tags_str = ' '.join(tags).lower()
-        if any(word in tags_str for word in ['emotet', 'trickbot', 'qakbot']):
-            return 'Banking Trojan'
-        elif any(word in tags_str for word in ['ransomware', 'lockbit', 'ryuk', 'sodinokibi']):
-            return 'Ransomware'
-        elif any(word in tags_str for word in ['phishing', 'phish']):
-            return 'Phishing'
-        elif any(word in tags_str for word in ['cobalt', 'beacon']):
-            return 'APT Activity'
-        elif any(word in tags_str for word in ['stealer', 'redline', 'vidar']):
-            return 'Credential Theft'
-        elif any(word in tags_str for word in ['malware', 'trojan']):
-            return 'Malware C2'
-        else:
-            return 'Malicious Infrastructure'
-    
-    def calculate_urlhaus_confidence(self, url_entry):
-        """Calculate confidence score for URLhaus entries"""
-        base_confidence = 80  # URLhaus entries are generally high quality
-        
-        # Boost confidence based on URL status
-        if url_entry.get('url_status') == 'online':
-            base_confidence += 10  # Active threats are higher priority
-        
-        # Boost based on number of tags (more context = higher confidence)
-        tags_count = len(url_entry.get('tags', []))
-        base_confidence += min(tags_count * 2, 10)
-        
-        # Boost for known threat families
-        threat = str(url_entry.get('threat', '')).lower()
-        if any(family in threat for family in ['emotet', 'trickbot', 'cobalt', 'ransomware']):
-            base_confidence += 5
-        
-        return min(base_confidence, 98)
         elif any(word in pulse_lower for word in ['botnet', 'bot']):
             return 'Botnet'
         elif any(word in pulse_lower for word in ['apt', 'advanced']):
@@ -264,27 +224,22 @@ class AbuseCHIngester(BaseIngester):
             
             # Fetch from ThreatFox (IOCs) with timeout protection
             try:
-                st.write("🔍 Fetching ThreatFox IOCs...")
                 threatfox_data = self.fetch_threatfox()
                 all_indicators.extend(threatfox_data)
-                st.write(f"✅ ThreatFox: {len(threatfox_data)} IOCs loaded")
             except Exception as e:
                 st.warning(f"ThreatFox failed: {str(e)}")
             
             # Fetch from URLhaus (malicious URLs) with timeout protection
             try:
-                st.write("🔍 Fetching URLhaus domains...")
                 urlhaus_data = self.fetch_urlhaus()
                 all_indicators.extend(urlhaus_data)
-                st.write(f"✅ URLhaus: {len(urlhaus_data)} domains loaded")
             except Exception as e:
                 st.warning(f"URLhaus failed: {str(e)}")
             
             # Return combined data
             if all_indicators:
-                return pd.DataFrame(all_indicators[:30])  # Increased limit for both sources
+                return pd.DataFrame(all_indicators[:30])
             else:
-                st.warning("No Abuse.ch data available, using sample data")
                 return self.get_sample_data()
             
         except Exception as e:
@@ -294,10 +249,9 @@ class AbuseCHIngester(BaseIngester):
     def fetch_threatfox(self):
         """Fetch IOCs from ThreatFox using authenticated API"""
         try:
-            # ThreatFox get_iocs endpoint with authentication
             payload = {
                 'query': 'get_iocs',
-                'days': 7  # Get IOCs from last 7 days
+                'days': 7
             }
             
             headers = {
@@ -310,7 +264,7 @@ class AbuseCHIngester(BaseIngester):
                 self.apis['threatfox'], 
                 json=payload,
                 headers=headers,
-                timeout=15  # Reduced from 30 to 15 seconds
+                timeout=15
             )
             response.raise_for_status()
             
@@ -318,7 +272,7 @@ class AbuseCHIngester(BaseIngester):
             indicators = []
             
             if result.get('query_status') == 'ok':
-                for ioc_entry in result.get('data', [])[:15]:  # Limit to 15
+                for ioc_entry in result.get('data', [])[:15]:
                     ioc_value = ioc_entry.get('ioc', '').strip()
                     if not ioc_value:
                         continue
@@ -333,8 +287,6 @@ class AbuseCHIngester(BaseIngester):
                         'campaign': ioc_entry.get('malware', 'Unknown Malware'),
                         'confidence_level': ioc_entry.get('confidence_level', 50)
                     })
-            else:
-                st.info(f"ThreatFox query status: {result.get('query_status', 'unknown')}")
             
             return indicators
             
@@ -345,10 +297,9 @@ class AbuseCHIngester(BaseIngester):
     def fetch_urlhaus(self):
         """Fetch malicious URLs from URLhaus using authenticated API"""
         try:
-            # URLhaus recent URLs with authentication
             payload = {
                 'query': 'get_urls',
-                'days': 3  # Last 3 days
+                'days': 3
             }
             
             headers = {
@@ -361,7 +312,7 @@ class AbuseCHIngester(BaseIngester):
                 self.apis['urlhaus'],
                 json=payload,
                 headers=headers,
-                timeout=15  # Reduced from 30 to 15 seconds
+                timeout=15
             )
             response.raise_for_status()
             
@@ -369,7 +320,7 @@ class AbuseCHIngester(BaseIngester):
             indicators = []
             
             if result.get('query_status') == 'ok':
-                for url_entry in result.get('urls', [])[:15]:  # Limit to 15
+                for url_entry in result.get('urls', [])[:15]:
                     url = url_entry.get('url', '')
                     if not url:
                         continue
@@ -396,8 +347,6 @@ class AbuseCHIngester(BaseIngester):
                         'url_status': url_entry.get('url_status', 'unknown'),
                         'full_url': url
                     })
-            else:
-                st.info(f"URLhaus query status: {result.get('query_status', 'unknown')}")
             
             return indicators
             
@@ -419,13 +368,47 @@ class AbuseCHIngester(BaseIngester):
         else:
             return 'Malware C2'
     
+    def classify_urlhaus_threat(self, tags):
+        """Classify threat type based on URLhaus tags"""
+        if not tags:
+            return 'Malware C2'
+        
+        tags_str = ' '.join(tags).lower()
+        if any(word in tags_str for word in ['emotet', 'trickbot', 'qakbot']):
+            return 'Banking Trojan'
+        elif any(word in tags_str for word in ['ransomware', 'lockbit', 'ryuk', 'sodinokibi']):
+            return 'Ransomware'
+        elif any(word in tags_str for word in ['phishing', 'phish']):
+            return 'Phishing'
+        elif any(word in tags_str for word in ['cobalt', 'beacon']):
+            return 'APT Activity'
+        elif any(word in tags_str for word in ['stealer', 'redline', 'vidar']):
+            return 'Credential Theft'
+        elif any(word in tags_str for word in ['malware', 'trojan']):
+            return 'Malware C2'
+        else:
+            return 'Malicious Infrastructure'
+    
     def calculate_threatfox_confidence(self, ioc_entry):
         """Calculate confidence score for ThreatFox entries"""
         base_confidence = 80
-        
-        # Use confidence rating from ThreatFox
         confidence_rating = ioc_entry.get('confidence_level', 50)
         base_confidence = max(base_confidence, confidence_rating)
+        return min(base_confidence, 98)
+    
+    def calculate_urlhaus_confidence(self, url_entry):
+        """Calculate confidence score for URLhaus entries"""
+        base_confidence = 80
+        
+        if url_entry.get('url_status') == 'online':
+            base_confidence += 10
+        
+        tags_count = len(url_entry.get('tags', []))
+        base_confidence += min(tags_count * 2, 10)
+        
+        threat = str(url_entry.get('threat', '')).lower()
+        if any(family in threat for family in ['emotet', 'trickbot', 'cobalt', 'ransomware']):
+            base_confidence += 5
         
         return min(base_confidence, 98)
     
@@ -448,7 +431,6 @@ class AbuseCHIngester(BaseIngester):
             if not date_string:
                 return datetime.now() - timedelta(days=1)
             
-            # Handle different date formats from Abuse.ch
             if 'T' in date_string:
                 return datetime.fromisoformat(date_string.replace('Z', '+00:00'))
             else:
@@ -487,17 +469,14 @@ class RiskScorer:
         if vuln_df.empty:
             return vuln_df
         
-        # Calculate risk score
         def calculate_vuln_risk(row):
-            base_score = row.get('cvss_score', 5.0) * 10  # Scale to 100
+            base_score = row.get('cvss_score', 5.0) * 10
             
-            # CISA KEV gets automatic high score
             if row.get('source') == 'CISA KEV':
                 base_score = max(base_score, 95)
             
-            # Age factor (newer = higher risk)
             days_old = (datetime.now() - row.get('date_added', datetime.now())).days
-            age_factor = max(1.0 - (days_old / 365), 0.5)  # Reduce over time
+            age_factor = max(1.0 - (days_old / 365), 0.5)
             
             return min(int(base_score * age_factor), 100)
         
@@ -514,18 +493,14 @@ class RiskScorer:
             confidence = row.get('confidence', 50)
             threat_type = row.get('threat_type', 'Suspicious Activity')
             
-            # Get threat type severity
             threat_severity = self.threat_severity_map.get(threat_type, 50)
-            
-            # Calculate composite risk score
             risk_score = (confidence * 0.6) + (threat_severity * 0.4)
             
-            # Freshness factor (newer = higher risk)
             days_old = (datetime.now() - row.get('first_seen', datetime.now())).days
             if days_old <= 7:
-                risk_score *= 1.1  # 10% boost for recent
+                risk_score *= 1.1
             elif days_old <= 30:
-                risk_score *= 1.05  # 5% boost for recent
+                risk_score *= 1.05
             
             return min(int(risk_score), 100)
         
@@ -533,42 +508,34 @@ class RiskScorer:
         ioc_df['risk_score'] = ioc_df.apply(calculate_ioc_risk, axis=1)
         return ioc_df
 
-@st.cache_data(ttl=3600, show_spinner=False)  # Cache for 1 hour, hide default spinner
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_threat_data():
     """Load and process threat intelligence data"""
     try:
-        # Initialize ingesters
         cisa_ingester = CISAKEVIngester()
         otx_ingester = OTXIngester()
         abuse_ingester = AbuseCHIngester()
         
-        # Initialize risk scorer
         scorer = RiskScorer()
         
-        # Load data with progress tracking
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        # CISA KEV (usually fastest)
         status_text.text("Loading CISA KEV vulnerabilities...")
         progress_bar.progress(10)
         cisa_data = cisa_ingester.fetch_data()
         
-        # OTX (can be slow)
         status_text.text("Loading OTX threat intelligence...")
         progress_bar.progress(40)
         otx_data = otx_ingester.fetch_data()
         
-        # Abuse.ch (can be slow)
         status_text.text("Loading Abuse.ch indicators...")
         progress_bar.progress(70)
         abuse_data = abuse_ingester.fetch_data()
         
-        # Process and score data
         status_text.text("Processing and scoring threats...")
         progress_bar.progress(90)
         
-        # Combine IOC data safely
         combined_iocs = pd.DataFrame()
         if not otx_data.empty and not abuse_data.empty:
             combined_iocs = pd.concat([otx_data, abuse_data], ignore_index=True)
@@ -583,10 +550,9 @@ def load_threat_data():
             'last_updated': datetime.now()
         }
         
-        # Clear progress indicators
         progress_bar.progress(100)
         status_text.text("✅ Threat data loaded successfully!")
-        time.sleep(1)  # Brief pause to show success
+        time.sleep(1)
         progress_bar.empty()
         status_text.empty()
         
@@ -594,10 +560,49 @@ def load_threat_data():
     
     except Exception as e:
         st.error(f"Error loading threat data: {str(e)}")
-        # Return minimal working data structure
         return {
             'vulnerabilities': pd.DataFrame(),
             'indicators': pd.DataFrame(), 
+            'last_updated': datetime.now()
+        }
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_threat_data_quick():
+    """Load only CISA KEV data for quick startup"""
+    try:
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        status_text.text("Loading CISA KEV vulnerabilities (Quick Mode)...")
+        progress_bar.progress(50)
+        
+        cisa_ingester = CISAKEVIngester()
+        cisa_data = cisa_ingester.fetch_data()
+        
+        scorer = RiskScorer()
+        
+        status_text.text("Processing vulnerabilities...")
+        progress_bar.progress(90)
+        
+        processed_data = {
+            'vulnerabilities': scorer.score_vulnerabilities(cisa_data),
+            'indicators': pd.DataFrame(),
+            'last_updated': datetime.now()
+        }
+        
+        progress_bar.progress(100)
+        status_text.text("✅ Quick mode loaded!")
+        time.sleep(1)
+        progress_bar.empty()
+        status_text.empty()
+        
+        return processed_data
+        
+    except Exception as e:
+        st.error(f"Error in quick mode: {str(e)}")
+        return {
+            'vulnerabilities': pd.DataFrame(),
+            'indicators': pd.DataFrame(),
             'last_updated': datetime.now()
         }
 
@@ -802,6 +807,7 @@ def main():
         st.subheader("🚩 Threat Indicators")
         
         if not filtered_iocs.empty:
+            # IOC type distribution
             type_counts = filtered_iocs['type'].value_counts()
             fig_types = px.bar(
                 x=type_counts.index,
