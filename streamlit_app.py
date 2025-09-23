@@ -1117,23 +1117,22 @@ def main():
                             # Title and basic info
                             st.markdown(f"**{item['title']}**")
                             
-                            # Metadata row
-                            col1, col2 = st.columns([2, 1])
-                            with col1:
-                                st.caption(f"📡 {item['source']} • 📅 {item['published'].strftime('%Y-%m-%d %H:%M')}")
-                            with col2:
-                                if item['tags']:
-                                    tag_display = " ".join([f"`{tag}`" for tag in item['tags'][:4]])  # Show max 4 tags
-                                    st.caption(tag_display)
+                            # Tags (if any)
+                            if item['tags']:
+                                tag_display = " ".join([f"`{tag}`" for tag in item['tags'][:4]])  # Show max 4 tags
+                                st.markdown(tag_display)
                             
-                            # Summary in expander
+                            # Summary (always visible, 2-3 lines)
                             if item['summary_raw']:
-                                with st.expander("📝 Show summary"):
-                                    st.write(item['summary_raw'][:500] + "..." if len(item['summary_raw']) > 500 else item['summary_raw'])
+                                summary_text = item['summary_raw'][:300] + "..." if len(item['summary_raw']) > 300 else item['summary_raw']
+                                st.write(summary_text)
                             
                             # Read more link
                             if item['link']:
                                 st.markdown(f"[🔗 Read full article]({item['link']})")
+                            
+                            # Source and date (smaller, less prominent)
+                            st.caption(f"📡 {item['source']} • 📅 {item['published'].strftime('%Y-%m-%d %H:%M')}")
                             
                             st.markdown("---")
                             
