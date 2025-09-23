@@ -61,69 +61,220 @@ def get_severity_color(severity):
     return colors.get(severity, '#6c757d')
 
 # News-related helper functions
+import re
+from collections import defaultdict
+from datetime import timezone
+
+# Configuration constants
+TOTAL_ITEMS_IN_FEED = 40
+MIN_PER_SOURCE_IN_FEED = 2
+MAX_PER_SOURCE_IN_FEED = 8
+MAX_EXTRACT_SIZE = 150 * 1024  # 150KB limit for extracted text
+
+# Enhanced tagging data
+ACTORS = {"ALPHV", "BlackCat", "Scattered Spider", "Lapsus$", "FIN7", "Wizard Spider", "TA505", "APT29", "APT28"}
+PRIORITY_TOPICS = {
+    "ransomware": "topic:ransomware",
+    "0-day": "topic:0day", "zero-day": "topic:0day",
+    "phishing": "topic:phishing",
+    "data breach": "topic:breach", "breach": "topic:breach",
+    "credentials": "topic:credentials",
+    "mfa": "topic:mfa",
+    "supply chain": "topic:supply-chain",
+}
+VENDOR_KEYWORDS = ["microsoft", "office 365", "microsoft 365", "fortinet", "citrix", "atlassian", "progress",
+                   "vpn", "rdp", "exchange", "cisco", "vmware", "palo alto", "linux", "windows", "macos", 
+                   "quickbooks", "invoice"]
+
+CVE_RE = re.compile(r"CVE-\d{4}-\d{4,7}", re.IGNORECASE)
+
+# Whitelisted sources for full content extraction
+EXTRACT_WHITELIST = {
+    "The Hacker News", "BleepingComputer", "Palo Alto Unit 42", 
+    "Microsoft Security Blog", "Cisco Talos", "CISA Alerts", "UK NCSC News", "ENISA News"
+}
+
 def stable_id(title, link):
     """Generate stable ID for news items"""
     return hashlib.sha256(f"{title}|{link}".encode()).hexdigest()[:16]
 
 def parse_rss_date(date_string):
-    """Parse various RSS date formats"""
+    """Parse various RSS date formats with timezone awareness"""
     try:
-        # Try different common RSS date formats
         import feedparser
         parsed_date = feedparser._parse_date(date_string)
         if parsed_date:
-            return datetime(*parsed_date[:6])
+            dt = datetime(*parsed_date[:6])
+            # Make timezone-aware
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
     except:
         pass
     
-    # Fallback to current time
-    return datetime.now()
+    # Fallback to current time with UTC timezone
+    return datetime.now(timezone.utc)
 
-def extract_tags(title, summary):
-    """Extract relevant tags from news content"""
-    tags = []
-    content = f"{title} {summary}".lower()
+def extract_full_content(url, source_name):
+    """Extract full article content for whitelisted sources"""
+    if source_name not in EXTRACT_WHITELIST:
+        return ""
+    
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        
+        if len(response.content) > MAX_EXTRACT_SIZE:
+            return ""
+        
+        soup = BeautifulSoup(response.content, 'lxml')
+        
+        # Remove scripts and style elements
+        for script in soup(["script", "style", "nav", "footer", "header", "aside"]):
+            script.decompose()
+        
+        # Try to find main content
+        content = soup.find('article') or soup.find('main') or soup.find('div', class_='content')
+        if not content:
+            content = soup.find('body')
+        
+        if content:
+            text = content.get_text()
+            return text[:MAX_EXTRACT_SIZE] if len(text) > MAX_EXTRACT_SIZE else text
+        
+        return ""
+    except:
+        return ""
+
+def tag_item(text: str) -> list[str]:
+    """Enhanced tagging with comprehensive detection"""
+    tags = set()
     
     # CVE detection
-    cve_pattern = r'cve-\d{4}-\d{4,}'
-    cves = re.findall(cve_pattern, content, re.IGNORECASE)
-    if cves:
-        tags.append('cve')
-        # Add specific CVEs if found
-        for cve in cves[:3]:  # Limit to 3 CVEs
-            tags.append(f'cve:{cve.upper()}')
+    for match in CVE_RE.findall(text):
+        tags.add(f"cve:{match.upper()}")
     
-    # Threat type detection
-    threat_keywords = {
-        'ransomware': ['ransomware', 'crypto-locker', 'file encryption'],
-        'phishing': ['phishing', 'credential theft', 'fake login'],
-        'malware': ['malware', 'trojan', 'backdoor', 'virus'],
-        'apt': ['apt', 'advanced persistent', 'nation-state'],
-        'vulnerability': ['vulnerability', 'exploit', 'zero-day', 'patch'],
-        'breach': ['data breach', 'breach', 'data leak', 'hack'],
-        'ddos': ['ddos', 'denial of service', 'botnet attack']
-    }
+    text_lower = text.lower()
     
-    for tag, keywords in threat_keywords.items():
-        if any(keyword in content for keyword in keywords):
-            tags.append(f'topic:{tag}')
+    # Threat actor detection
+    for actor in ACTORS:
+        if actor.lower() in text_lower:
+            tags.add(f"actor:{actor}")
     
-    # Threat actor/group detection
-    threat_actors = [
-        'alphv', 'blackcat', 'lockbit', 'conti', 'revil', 'ryuk',
-        'emotet', 'trickbot', 'qakbot', 'lazarus', 'apt28', 'apt29',
-        'cozy bear', 'fancy bear', 'carbanak', 'fin7'
-    ]
+    # Priority topic detection
+    for keyword, tag in PRIORITY_TOPICS.items():
+        if keyword in text_lower:
+            tags.add(tag)
     
-    for actor in threat_actors:
-        if actor in content:
-            tags.append(f'threat-actor:{actor}')
+    # Vendor keyword detection
+    for vendor in VENDOR_KEYWORDS:
+        if vendor in text_lower:
+            tags.add(f"vendor:{vendor}")
     
-    return list(set(tags))  # Remove duplicates
+    return sorted(tags)
+
+def time_decay(published_dt: datetime) -> float:
+    """Calculate time decay factor for relevance scoring"""
+    if not published_dt:
+        return 0.8
+    
+    try:
+        # Ensure both timestamps are timezone-aware
+        now = datetime.now(timezone.utc)
+        if published_dt.tzinfo is None:
+            published_dt = published_dt.replace(tzinfo=timezone.utc)
+        
+        days = (now - published_dt).days
+        
+        if days <= 2:
+            return 1.25
+        elif days <= 7:
+            return 1.0
+        elif days <= 14:
+            return 0.8
+        else:
+            return 0.6
+    except:
+        return 0.8
+
+def compute_relevance(item: dict) -> int:
+    """Compute relevance score based on tags and time"""
+    tags = item.get("tags", [])
+    
+    cves = [t for t in tags if t.startswith("cve:")]
+    actors = [t for t in tags if t.startswith("actor:")]
+    topics = [t for t in tags if t.startswith("topic:")]
+    vendors = [t for t in tags if t.startswith("vendor:")]
+    
+    score = 0
+    
+    # CVE points (max 12)
+    score += min(len(set(cves)) * 4, 12)
+    
+    # Actor points (max 9)
+    score += min(len(set(actors)) * 3, 9)
+    
+    # Priority topic points (max 6)
+    priority_topics = {"topic:ransomware", "topic:0day", "topic:breach"}
+    score += min(sum(1 for t in topics if t in priority_topics) * 2, 6)
+    
+    # Vendor points (max 3)
+    score += min(len(set(vendors)), 3)
+    
+    # SME relevance bump
+    sme_vendors = ["vendor:microsoft", "vendor:microsoft 365", "vendor:office 365", "vendor:vpn", 
+                   "vendor:rdp", "vendor:quickbooks"]
+    sme_topics = ["topic:phishing", "topic:credentials"]
+    
+    if any(v in vendors for v in sme_vendors) or any(t in topics for t in sme_topics):
+        score += 2
+    
+    # Apply time decay
+    score = int(round(score * time_decay(item.get("published_dt"))))
+    
+    return max(score, 0)
+
+def mix_items_scored(items: list[dict]) -> list[dict]:
+    """Mix items across sources for balanced representation"""
+    by_src = defaultdict(list)
+    
+    # Group by source and sort by relevance/date
+    for item in items:
+        by_src[item["source"]].append(item)
+    
+    for source in by_src:
+        by_src[source].sort(
+            key=lambda x: (x["relevance_score"], x["published_dt"] or datetime.min.replace(tzinfo=timezone.utc)), 
+            reverse=True
+        )
+    
+    picked = []
+    
+    # First pass: ensure minimum per source
+    for _ in range(MIN_PER_SOURCE_IN_FEED):
+        for source in list(by_src.keys()):
+            if by_src[source] and sum(1 for x in picked if x["source"] == source) < MAX_PER_SOURCE_IN_FEED:
+                picked.append(by_src[source].pop(0))
+                if len(picked) >= TOTAL_ITEMS_IN_FEED:
+                    return picked
+    
+    # Second pass: fill remaining slots
+    while len(picked) < TOTAL_ITEMS_IN_FEED:
+        progressed = False
+        for source in list(by_src.keys()):
+            if by_src[source] and sum(1 for x in picked if x["source"] == source) < MAX_PER_SOURCE_IN_FEED:
+                picked.append(by_src[source].pop(0))
+                progressed = True
+                if len(picked) >= TOTAL_ITEMS_IN_FEED:
+                    break
+        if not progressed:
+            break
+    
+    return picked
 
 @st.cache_data(ttl=7200, show_spinner=False)  # Cache for 2 hours
 def load_news():
-    """Load cybersecurity news from RSS feeds"""
+    """Load cybersecurity news from RSS feeds with enhanced processing"""
     sources = [
         ("CISA Alerts", "https://www.cisa.gov/news-events/alerts/all.xml"),
         ("UK NCSC News", "https://www.ncsc.gov.uk/api/1/services/v1/news.rss"),
@@ -139,12 +290,12 @@ def load_news():
     
     for source_name, url in sources:
         try:
-            # Parse RSS feed with timeout
+            # Parse RSS feed
             feed = feedparser.parse(url)
             
             # Check if feed parsed successfully
             if hasattr(feed, 'entries') and feed.entries:
-                for entry in feed.entries[:10]:  # Limit to 10 entries per source
+                for entry in feed.entries[:30]:  # Increased from 10 to 30
                     try:
                         title = entry.get('title', 'No title')
                         link = entry.get('link', '')
@@ -155,23 +306,35 @@ def load_news():
                             soup = BeautifulSoup(summary, 'html.parser')
                             summary = soup.get_text().strip()
                         
-                        # Parse publication date
+                        # Parse publication date with timezone awareness
                         pub_date = entry.get('published', entry.get('pubDate', ''))
-                        parsed_date = parse_rss_date(pub_date) if pub_date else datetime.now()
+                        parsed_date = parse_rss_date(pub_date) if pub_date else datetime.now(timezone.utc)
+                        
+                        # Combine text for tagging
+                        full_text = f"{title} {summary}"
+                        
+                        # Extract full content for whitelisted sources
+                        if source_name in EXTRACT_WHITELIST and link:
+                            full_content = extract_full_content(link, source_name)
+                            if full_content:
+                                full_text += f" {full_content}"
                         
                         # Extract tags
-                        tags = extract_tags(title, summary)
+                        tags = tag_item(full_text)
                         
                         news_item = {
                             'id': stable_id(title, link),
                             'source': source_name,
                             'title': title,
                             'link': link,
-                            'published': parsed_date,
+                            'published_dt': parsed_date,
                             'summary_raw': summary,
                             'tags': tags,
                             'pub_date_str': pub_date
                         }
+                        
+                        # Compute relevance score
+                        news_item['relevance_score'] = compute_relevance(news_item)
                         
                         all_news.append(news_item)
                         
@@ -179,13 +342,13 @@ def load_news():
                         continue  # Skip problematic entries
                         
         except Exception as e:
-            st.warning(f"Failed to load {source_name}: {str(e)}")
+            # Silent failure as specified
             continue
     
-    # Sort by publication date (newest first)
-    all_news.sort(key=lambda x: x['published'], reverse=True)
+    # Mix items for balanced representation
+    mixed_news = mix_items_scored(all_news)
     
-    return all_news[:50]  # Return top 50 most recent news items
+    return mixed_news
 
 # Data Ingestion Classes
 class BaseIngester:
@@ -1030,117 +1193,137 @@ def main():
     with tab5:
         st.subheader("📰 Latest Cybersecurity News & Intelligence")
         
-        # Add filters for news
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            days_filter = st.selectbox(
-                "Show news from last:",
-                [1, 3, 7, 14, 30],
-                index=2,
-                key="news_days"
+        # Enhanced sidebar filters for news
+        with st.sidebar:
+            st.markdown("---")
+            st.markdown("**📰 News Filters**")
+            
+            # Freshness slider
+            freshness_days = st.slider(
+                "Freshness (days)",
+                min_value=1,
+                max_value=30,
+                value=7,
+                help="Show news from the last N days"
             )
-        
-        with col2:
-            source_filter = st.multiselect(
-                "Filter by source:",
-                ["CISA Alerts", "UK NCSC News", "ENISA News", "The Hacker News", 
-                 "BleepingComputer", "Cisco Talos", "Microsoft Security Blog", "Palo Alto Unit 42"],
+            
+            # Topics multiselect
+            available_topics = [
+                "All Topics",
+                "CVE/Vulnerability", 
+                "Ransomware",
+                "Phishing", 
+                "Data Breach",
+                "APT/Nation-State",
+                "Zero-Day",
+                "Supply Chain",
+                "Microsoft/Office 365",
+                "VPN/Remote Access"
+            ]
+            
+            selected_topics = st.multiselect(
+                "Filter by Topics",
+                available_topics[1:],  # Exclude "All Topics" from multiselect
                 default=[],
-                key="news_sources"
-            )
-        
-        with col3:
-            tag_filter = st.selectbox(
-                "Filter by topic:",
-                ["All", "CVE", "Ransomware", "Phishing", "Malware", "APT", "Vulnerability", "Breach", "DDoS"],
-                index=0,
-                key="news_tags"
+                help="Select specific topics to focus on"
             )
         
         # Load news data
         try:
-            with st.spinner("Loading latest cybersecurity news..."):
+            with st.spinner("Loading latest cybersecurity intelligence..."):
                 news_items = load_news()
             
             if not news_items:
                 st.warning("No news items could be loaded. Please check your internet connection.")
             else:
-                # Apply filters
-                filtered_news = news_items
+                # Apply freshness filter
+                cutoff_date = datetime.now(timezone.utc) - timedelta(days=freshness_days)
+                filtered_news = [
+                    item for item in news_items 
+                    if item.get('published_dt', datetime.min.replace(tzinfo=timezone.utc)) >= cutoff_date
+                ]
                 
-                # Filter by days
-                cutoff_date = datetime.now() - timedelta(days=days_filter)
-                filtered_news = [item for item in filtered_news if item['published'] >= cutoff_date]
-                
-                # Filter by source
-                if source_filter:
-                    filtered_news = [item for item in filtered_news if item['source'] in source_filter]
-                
-                # Filter by tags
-                if tag_filter != "All":
-                    tag_map = {
-                        "CVE": "cve",
-                        "Ransomware": "topic:ransomware", 
-                        "Phishing": "topic:phishing",
-                        "Malware": "topic:malware",
-                        "APT": "topic:apt",
-                        "Vulnerability": "topic:vulnerability",
-                        "Breach": "topic:breach",
-                        "DDoS": "topic:ddos"
+                # Apply topic filters
+                if selected_topics:
+                    topic_map = {
+                        "CVE/Vulnerability": ["cve:", "topic:vulnerability", "topic:0day"],
+                        "Ransomware": ["topic:ransomware"],
+                        "Phishing": ["topic:phishing"],
+                        "Data Breach": ["topic:breach"],
+                        "APT/Nation-State": ["actor:", "topic:apt"],
+                        "Zero-Day": ["topic:0day"],
+                        "Supply Chain": ["topic:supply-chain"],
+                        "Microsoft/Office 365": ["vendor:microsoft", "vendor:office 365", "vendor:microsoft 365"],
+                        "VPN/Remote Access": ["vendor:vpn", "vendor:rdp"]
                     }
-                    target_tag = tag_map.get(tag_filter, "")
-                    if target_tag:
-                        filtered_news = [item for item in filtered_news 
-                                       if any(target_tag in tag for tag in item['tags'])]
+                    
+                    topic_filtered = []
+                    for item in filtered_news:
+                        item_tags = item.get('tags', [])
+                        for selected_topic in selected_topics:
+                            target_tags = topic_map.get(selected_topic, [])
+                            if any(any(tag.startswith(target) for target in target_tags) for tag in item_tags):
+                                topic_filtered.append(item)
+                                break
+                    filtered_news = topic_filtered
                 
-                # Display summary metrics
-                col1, col2, col3, col4 = st.columns(4)
+                # Display summary metrics (simplified)
+                col1, col2, col3 = st.columns(3)
                 with col1:
-                    st.metric("📰 Total Articles", len(filtered_news))
+                    st.metric("📰 Articles", len(filtered_news))
                 with col2:
-                    cve_articles = len([item for item in filtered_news if any('cve' in tag for tag in item['tags'])])
-                    st.metric("🔍 CVE Mentions", cve_articles)
+                    cve_count = len([item for item in filtered_news if any('cve:' in tag for tag in item.get('tags', []))])
+                    st.metric("🔍 CVE Mentions", cve_count)
                 with col3:
-                    high_priority = len([item for item in filtered_news 
-                                       if any(tag.startswith('topic:') for tag in item['tags'])])
-                    st.metric("⚠️ High Priority", high_priority)
-                with col4:
-                    sources_count = len(set(item['source'] for item in filtered_news))
-                    st.metric("📡 Active Sources", sources_count)
+                    high_relevance = len([item for item in filtered_news if item.get('relevance_score', 0) >= 5])
+                    st.metric("⚠️ High Relevance", high_relevance)
                 
                 st.markdown("---")
                 
-                # Display news items
+                # Display news items with enhanced formatting
                 if filtered_news:
-                    for i, item in enumerate(filtered_news[:20]):  # Show max 20 items
+                    for i, item in enumerate(filtered_news):
                         with st.container():
-                            # Title and basic info
+                            # Title (bold headline)
                             st.markdown(f"**{item['title']}**")
                             
-                            # Tags (if any)
-                            if item['tags']:
-                                tag_display = " ".join([f"`{tag}`" for tag in item['tags'][:4]])  # Show max 4 tags
-                                st.markdown(tag_display)
+                            # Tags as chips (if any)
+                            if item.get('tags'):
+                                # Prioritize important tags for display
+                                important_tags = []
+                                other_tags = []
+                                
+                                for tag in item['tags'][:6]:  # Limit to 6 tags max
+                                    if any(tag.startswith(prefix) for prefix in ['cve:', 'actor:', 'topic:ransomware', 'topic:0day', 'topic:breach']):
+                                        important_tags.append(tag)
+                                    else:
+                                        other_tags.append(tag)
+                                
+                                display_tags = important_tags + other_tags[:6-len(important_tags)]
+                                if display_tags:
+                                    tag_display = " ".join([f"`{tag}`" for tag in display_tags])
+                                    st.markdown(tag_display)
                             
-                            # Summary (always visible, 2-3 lines)
-                            if item['summary_raw']:
+                            # Summary (always visible, 2-3 lines) - preserving our earlier change
+                            if item.get('summary_raw'):
                                 summary_text = item['summary_raw'][:300] + "..." if len(item['summary_raw']) > 300 else item['summary_raw']
                                 st.write(summary_text)
                             
-                            # Read more link
-                            if item['link']:
+                            # Read more link (source attribution only here)
+                            if item.get('link'):
                                 st.markdown(f"[🔗 Read full article]({item['link']})")
                             
-                            # Source and date (smaller, less prominent)
-                            st.caption(f"📡 {item['source']} • 📅 {item['published'].strftime('%Y-%m-%d %H:%M')}")
+                            # Date only (muted, at bottom) - preserving our earlier change
+                            if item.get('published_dt'):
+                                st.caption(f"📅 {item['published_dt'].strftime('%Y-%m-%d %H:%M UTC')}")
+                            
+                            # Relevance score for debugging (remove in production)
+                            if item.get('relevance_score', 0) > 0:
+                                st.caption(f"Relevance: {item['relevance_score']}")
                             
                             st.markdown("---")
-                            
-                            # Add spacing between items
-                            if i < len(filtered_news) - 1:
-                                st.write("")
                 else:
-                    st.info("No news articles match your current filters. Try adjusting the date range or removing source filters.")
+                    st.info("No recent items matched your filters. Try adjusting the freshness slider or removing topic filters.")
                     
         except Exception as e:
             st.error(f"Error loading news: {str(e)}")
