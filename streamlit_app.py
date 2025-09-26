@@ -1574,7 +1574,7 @@ def main():
     with tab6:
         st.subheader("💥 Ransomware Groups Intelligence")
         
-        # Ransomware-specific filters in sidebar
+        # Ransomware-specific filters in sidebar (simplified)
         with st.sidebar:
             st.markdown("---")
             st.markdown("**💥 Ransomware Analysis**")
@@ -1586,41 +1586,6 @@ def main():
                 value=45,
                 help="Analyze ransomware activity over the last N days"
             )
-            
-            # Group profile selector
-            st.markdown("---")
-            st.markdown("**📋 Group Profiles**")
-            profile_groups = ["Select a group...", "LockBit", "ALPHV", "Cl0p", "BlackBasta", "Royal", 
-                             "Play", "BianLian", "Akira", "Rhysida", "Scattered Spider"]
-            selected_profile = st.selectbox(
-                "View group profile:",
-                profile_groups,
-                help="Select a ransomware group to view detailed profile information"
-            )
-        
-        # Display selected group profile in sidebar
-        if selected_profile != "Select a group...":
-            with st.sidebar:
-                st.markdown("---")
-                profile = get_ransomware_profile(selected_profile)
-                st.markdown(f"### 🔍 {selected_profile} Profile")
-                st.markdown(f"**Description:** {profile['description']}")
-                st.markdown(f"**First Seen:** {profile['first_seen']}")
-                st.markdown(f"**Type:** {profile['type']}")
-                st.markdown(f"**Status:** {profile['status']}")
-                
-                st.markdown("**Primary Tactics:**")
-                for tactic in profile['tactics']:
-                    st.write(f"• {tactic}")
-                
-                st.markdown("**Common Targets:**")
-                for target in profile['targets']:
-                    st.write(f"• {target}")
-                
-                if profile.get('notable_attacks'):
-                    st.markdown("**Notable Attacks:**")
-                    for attack in profile['notable_attacks'][:3]:
-                        st.write(f"• {attack}")
         
         try:
             with st.spinner("Analyzing ransomware group activity..."):
@@ -1635,189 +1600,192 @@ def main():
                 
                 groups = rw_payload.get("groups", {})
                 last_updated = rw_payload.get("last_updated", "Unknown")
+                
+                # Get all possible ransomware groups (detected + known profiles)
+                all_group_names = set(groups.keys())
+                profile_groups = ["LockBit", "ALPHV", "Cl0p", "BlackBasta", "Royal", "Play", "BianLian", 
+                                "Akira", "Rhysida", "Scattered Spider", "Qilin", "RansomHub", "Cuba", 
+                                "Medusa", "Conti", "Hive", "Maze", "Sodinokibi", "Ryuk", "DarkSide"]
+                all_group_names.update(profile_groups)
+                all_groups_list = sorted(list(all_group_names))
             
-            if not groups:
-                st.info("No ransomware group activity detected in the selected time window.")
-                st.caption(f"Analyzed {len(news_items)} news articles from the last {rw_days} days")
-            else:
-                # Summary metrics
-                col1, col2, col3, col4 = st.columns(4)
+            # Summary metrics
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("🎯 Tracked Groups", len(all_groups_list))
+            with col2:
+                active_groups = len(groups)
+                st.metric("📊 Recently Active", active_groups)
+            with col3:
+                total_victims = sum(len(group.get('victims', [])) for group in groups.values())
+                st.metric("🏢 Victims Identified", total_victims)
+            with col4:
+                total_stories = sum(len(group.get('all_stories', [])) for group in groups.values())
+                st.metric("📰 Total Coverage", total_stories)
+            
+            # Storage status
+            storage_status = "💾 SQLite" if saved_to_db else "🧠 In-Memory"
+            st.caption(f"Last updated: {last_updated} • Storage: {storage_status} • Analysis period: {rw_days} days")
+            
+            st.markdown("---")
+            
+            # Ransomware Group Cards Grid
+            st.markdown("### 🃏 Ransomware Groups Directory")
+            st.caption("Click on any group to view detailed threat intelligence profile")
+            
+            # Initialize session state for selected group
+            if 'selected_ransomware_group' not in st.session_state:
+                st.session_state.selected_ransomware_group = None
+            
+            # Create grid of clickable cards (4 columns)
+            num_cols = 4
+            num_groups = len(all_groups_list)
+            num_rows = (num_groups + num_cols - 1) // num_cols
+            
+            for row in range(num_rows):
+                cols = st.columns(num_cols)
+                for col_idx in range(num_cols):
+                    group_idx = row * num_cols + col_idx
+                    if group_idx < num_groups:
+                        group_name = all_groups_list[group_idx]
+                        group_data = groups.get(group_name, {})
+                        
+                        with cols[col_idx]:
+                            # Determine if group has recent activity
+                            is_active = group_name in groups
+                            activity_score = group_data.get('activity_score', 0)
+                            victim_count = len(group_data.get('victims', []))
+                            last_seen = group_data.get('last_seen', 'No recent activity')
+                            
+                            # Create clickable button styled as a card
+                            button_style = "🔥" if is_active else "💤"
+                            button_text = f"{button_style} {group_name}"
+                            
+                            if st.button(
+                                button_text,
+                                key=f"group_{group_name}",
+                                help=f"Click to view {group_name} profile",
+                                use_container_width=True
+                            ):
+                                st.session_state.selected_ransomware_group = group_name
+                            
+                            # Show mini stats under button
+                            if is_active:
+                                st.caption(f"Activity: {activity_score} | Victims: {victim_count}")
+                                st.caption(f"Last seen: {last_seen}")
+                            else:
+                                st.caption("No recent activity detected")
+            
+            st.markdown("---")
+            
+            # Profile Display Section
+            if st.session_state.selected_ransomware_group:
+                selected_group = st.session_state.selected_ransomware_group
+                st.markdown(f"### 🔍 {selected_group} - Threat Intelligence Profile")
+                
+                # Get profile information
+                profile = get_ransomware_profile(selected_group)
+                group_data = groups.get(selected_group, {})
+                
+                # Profile overview in columns
+                col1, col2 = st.columns(2)
+                
                 with col1:
-                    st.metric("🎯 Active Groups", len(groups))
-                with col2:
-                    total_victims = sum(len(group.get('victims', [])) for group in groups.values())
-                    st.metric("🏢 Victims Identified", total_victims)
-                with col3:
-                    total_stories = sum(len(group.get('all_stories', [])) for group in groups.values())
-                    st.metric("📰 Total Coverage", total_stories)
-                with col4:
-                    total_attacks = sum(len(group.get('attack_stories', [])) for group in groups.values())
-                    st.metric("🚨 Attack Reports", total_attacks)
-                
-                # Storage status
-                storage_status = "💾 SQLite" if saved_to_db else "🧠 In-Memory"
-                st.caption(f"Last updated: {last_updated} • Storage: {storage_status} • Analysis period: {rw_days} days")
-                
-                st.markdown("---")
-                
-                # TOP SECTION: Ransomware Group Cards
-                st.markdown("### 🃏 Top Ransomware Groups")
-                st.caption("Click on group names in the sidebar 'Group Profiles' section to view detailed information")
-                
-                # Sort groups by activity score and recent activity
-                sorted_groups = sorted(
-                    groups.items(), 
-                    key=lambda kv: (kv[1].get("activity_score", 0), kv[1].get("last_seen", "")), 
-                    reverse=True
-                )
-                
-                # Display top groups in a grid of cards
-                top_groups = sorted_groups[:6]  # Show top 6 groups
-                
-                if len(top_groups) >= 3:
-                    # Display in rows of 3
-                    for i in range(0, len(top_groups), 3):
-                        cols = st.columns(3)
-                        for j, (group_name, group_data) in enumerate(top_groups[i:i+3]):
-                            with cols[j]:
-                                # Create clickable card-like container
-                                profile_available = group_name in ["LockBit", "ALPHV", "Cl0p", "BlackBasta", "Royal", 
-                                                                 "Play", "BianLian", "Akira", "Rhysida", "Scattered Spider"]
-                                profile_indicator = "🔍" if profile_available else "ℹ️"
-                                
-                                # Create card with click instruction
-                                st.markdown(f"""
-                                <div style="
-                                    border: 1px solid #ddd; 
-                                    border-radius: 8px; 
-                                    padding: 16px; 
-                                    margin: 8px 0;
-                                    background-color: #f8f9fa;
-                                    min-height: 150px;
-                                ">
-                                    <h4 style="margin-top: 0; color: #dc3545;">💀 {group_name} {profile_indicator}</h4>
-                                    <p style="margin: 4px 0;"><strong>Last seen:</strong> {group_data.get('last_seen', 'Unknown')}</p>
-                                    <p style="margin: 4px 0;"><strong>Activity:</strong> {group_data.get('activity_score', 0)} mentions</p>
-                                    <p style="margin: 4px 0;"><strong>Victims:</strong> {len(group_data.get('victims', []))}</p>
-                                    <p style="margin: 4px 0;"><strong>Stories:</strong> {len(group_data.get('all_stories', []))}</p>
-                                    <p style="font-size: 0.8em; color: #666; margin-top: 8px;">
-                                        {"Click in sidebar to view profile 🔍" if profile_available else "Profile data being collected ℹ️"}
-                                    </p>
-                                </div>
-                                """, unsafe_allow_html=True)
-                else:
-                    # Display in single row if fewer than 3
-                    cols = st.columns(len(top_groups))
-                    for j, (group_name, group_data) in enumerate(top_groups):
-                        with cols[j]:
-                            profile_available = group_name in ["LockBit", "ALPHV", "Cl0p", "BlackBasta", "Royal", 
-                                                             "Play", "BianLian", "Akira", "Rhysida", "Scattered Spider"]
-                            profile_indicator = "🔍" if profile_available else "ℹ️"
-                            
-                            st.markdown(f"""
-                            <div style="
-                                border: 1px solid #ddd; 
-                                border-radius: 8px; 
-                                padding: 16px; 
-                                margin: 8px 0;
-                                background-color: #f8f9fa;
-                            ">
-                                <h4 style="margin-top: 0; color: #dc3545;">💀 {group_name} {profile_indicator}</h4>
-                                <p><strong>Last seen:</strong> {group_data.get('last_seen', 'Unknown')}</p>
-                                <p><strong>Activity:</strong> {group_data.get('activity_score', 0)} mentions</p>
-                                <p><strong>Victims:</strong> {len(group_data.get('victims', []))}</p>
-                                <p style="font-size: 0.8em; color: #666;">
-                                    {"Click in sidebar 🔍" if profile_available else "Profile pending ℹ️"}
-                                </p>
-                            </div>
-                            """, unsafe_allow_html=True)
-                
-                st.markdown("---")
-                
-                # BOTTOM SECTION: Detailed News and Analysis
-                st.markdown("### 📰 Ransomware News & Intelligence")
-                
-                # Display detailed group information
-                for group_name, group_data in sorted_groups:
-                    profile_available = group_name in ["LockBit", "ALPHV", "Cl0p", "BlackBasta", "Royal", 
-                                                     "Play", "BianLian", "Akira", "Rhysida", "Scattered Spider"]
-                    profile_indicator = " 🔍" if profile_available else ""
+                    st.markdown("**📋 Group Overview**")
+                    st.write(f"**Description:** {profile['description']}")
+                    st.write(f"**First Seen:** {profile['first_seen']}")
+                    st.write(f"**Type:** {profile['type']}")
+                    st.write(f"**Current Status:** {profile['status']}")
                     
-                    with st.expander(f"🔍 {group_name}{profile_indicator} - Detailed Analysis ({group_data.get('activity_score', 0)} mentions)"):
-                        
-                        # Add profile link reminder
-                        if profile_available:
-                            st.info(f"💡 **Tip:** Select '{group_name}' in the sidebar 'Group Profiles' section for detailed threat intelligence.")
-                        
-                        # Group overview
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.markdown("**Group Information:**")
-                            st.write(f"• **Last Activity:** {group_data.get('last_seen', 'Unknown')}")
-                            st.write(f"• **Total Mentions:** {group_data.get('activity_score', 0)}")
-                            st.write(f"• **Known Victims:** {len(group_data.get('victims', []))}")
-                            
-                            # Aliases
-                            if group_data.get('aliases'):
-                                aliases = ", ".join(group_data['aliases'][:5])
-                                st.write(f"• **Also Known As:** {aliases}")
-                        
-                        with col2:
-                            st.markdown("**Coverage Breakdown:**")
-                            st.write(f"• **All News Stories:** {len(group_data.get('all_stories', []))}")
-                            st.write(f"• **Attack Reports:** {len(group_data.get('attack_stories', []))}")
-                            st.write(f"• **Victim Reports:** {len(group_data.get('victims', []))}")
-                        
-                        # Recent news (all stories about this group)
-                        if group_data.get('all_stories'):
-                            st.markdown("**📰 Recent News Coverage:**")
-                            for story in group_data['all_stories'][:5]:
-                                st.write(f"• [{story['title']}]({story['link']}) - {story['published']}")
-                                if story.get('summary'):
-                                    st.caption(f"   {story['summary']}")
-                        
-                        # Attack-specific stories
-                        if group_data.get('attack_stories'):
-                            st.markdown("**🚨 Recent Attack Reports:**")
-                            for story in group_data['attack_stories'][:3]:
-                                st.write(f"• [{story['title']}]({story['link']}) - {story['published']}")
-                                if story.get('summary'):
-                                    st.caption(f"   {story['summary']}")
-                        
-                        # Victims section
-                        if group_data.get('victims'):
-                            st.markdown("**🏢 Recent Victims:**")
-                            victim_cols = st.columns(2)
-                            for idx, victim in enumerate(group_data['victims'][:10]):
-                                col = victim_cols[idx % 2]
-                                with col:
-                                    if victim.get('source'):
-                                        st.write(f"• **{victim['name']}** ({victim['date']}) - [source]({victim['source']})")
-                                    else:
-                                        st.write(f"• **{victim['name']}** ({victim['date']})")
-                            
-                            if len(group_data['victims']) > 10:
-                                st.caption(f"... and {len(group_data['victims']) - 10} more victims")
+                    if profile.get('notable_attacks'):
+                        st.markdown("**🎯 Notable Attacks:**")
+                        for attack in profile['notable_attacks']:
+                            st.write(f"• {attack}")
                 
-                # Show remaining groups if any
-                if len(sorted_groups) > 6:
-                    with st.expander(f"📋 Other Active Groups ({len(sorted_groups) - 6} more)"):
-                        for group_name, group_data in sorted_groups[6:]:
-                            profile_available = group_name in ["LockBit", "ALPHV", "Cl0p", "BlackBasta", "Royal", 
-                                                             "Play", "BianLian", "Akira", "Rhysida", "Scattered Spider"]
-                            profile_indicator = " 🔍" if profile_available else ""
-                            
-                            st.write(f"• **{group_name}{profile_indicator}** - Last seen: {group_data.get('last_seen', 'Unknown')} "
-                                   f"({group_data.get('activity_score', 0)} mentions, "
-                                   f"{len(group_data.get('victims', []))} victims)")
+                with col2:
+                    st.markdown("**⚔️ Tactics & Targeting**")
+                    st.markdown("**Primary Tactics:**")
+                    for tactic in profile['tactics']:
+                        st.write(f"• {tactic}")
+                    
+                    st.markdown("**Common Targets:**")
+                    for target in profile['targets']:
+                        st.write(f"• {target}")
+                    
+                    # Recent activity data if available
+                    if group_data:
+                        st.markdown("**📊 Recent Activity:**")
+                        st.write(f"• **Last Activity:** {group_data.get('last_seen', 'Unknown')}")
+                        st.write(f"• **News Mentions:** {group_data.get('activity_score', 0)}")
+                        st.write(f"• **Identified Victims:** {len(group_data.get('victims', []))}")
                 
-                # Disclaimer
-                st.markdown("---")
-                st.info("""
-                ⚠️ **Intelligence Disclaimer**: This analysis is based on automated parsing of cybersecurity news feeds. 
-                Information may include false positives and should be verified through official sources. 
-                This tool is designed to provide situational awareness for threat intelligence purposes.
-                """)
+                # Recent Intelligence Section
+                if group_data:
+                    st.markdown("---")
+                    st.markdown(f"**📰 Recent Intelligence on {selected_group}**")
+                    
+                    # Display recent stories in tabs
+                    if group_data.get('all_stories') or group_data.get('attack_stories') or group_data.get('victims'):
+                        tab_stories, tab_attacks, tab_victims = st.tabs(["All News", "Attack Reports", "Recent Victims"])
+                        
+                        with tab_stories:
+                            if group_data.get('all_stories'):
+                                for story in group_data['all_stories'][:5]:
+                                    st.write(f"**[{story['title']}]({story['link']})**")
+                                    st.caption(f"Published: {story['published']}")
+                                    if story.get('summary'):
+                                        st.write(story['summary'])
+                                    st.markdown("---")
+                            else:
+                                st.info("No recent news coverage detected")
+                        
+                        with tab_attacks:
+                            if group_data.get('attack_stories'):
+                                for story in group_data['attack_stories'][:3]:
+                                    st.write(f"**[{story['title']}]({story['link']})**")
+                                    st.caption(f"Published: {story['published']}")
+                                    if story.get('summary'):
+                                        st.write(story['summary'])
+                                    st.markdown("---")
+                            else:
+                                st.info("No recent attack reports detected")
+                        
+                        with tab_victims:
+                            if group_data.get('victims'):
+                                victim_cols = st.columns(2)
+                                for idx, victim in enumerate(group_data['victims'][:12]):
+                                    col = victim_cols[idx % 2]
+                                    with col:
+                                        if victim.get('source'):
+                                            st.write(f"**{victim['name']}**")
+                                            st.caption(f"{victim['date']} - [Source]({victim['source']})")
+                                        else:
+                                            st.write(f"**{victim['name']}** - {victim['date']}")
+                                
+                                if len(group_data['victims']) > 12:
+                                    st.caption(f"... and {len(group_data['victims']) - 12} more victims")
+                            else:
+                                st.info("No recent victims identified")
+                    else:
+                        st.info(f"No recent intelligence data available for {selected_group}")
+                
+                # Clear selection button
+                if st.button("Clear Selection", key="clear_selection"):
+                    st.session_state.selected_ransomware_group = None
+                    st.rerun()
+            else:
+                st.info("👆 Select a ransomware group above to view detailed threat intelligence profile")
+                
+            # Legend
+            st.markdown("---")
+            st.caption("🔥 = Recently active groups with detected news coverage | 💤 = Groups with profiles but no recent activity")
+            
+            # Disclaimer
+            st.info("""
+            ⚠️ **Intelligence Disclaimer**: This analysis combines automated news parsing with curated threat intelligence profiles. 
+            Information may include false positives and should be verified through official sources. 
+            This tool provides situational awareness for threat intelligence purposes.
+            """)
                     
         except Exception as e:
             st.error(f"Error analyzing ransomware activity: {str(e)}")
