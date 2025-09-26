@@ -352,14 +352,119 @@ def load_news():
     return mixed_news
 
 # Ransomware Groups Analysis
-def build_ransomware_groups(news_items=None, days_back=7):
-    """Analyze news items to extract ransomware group activity and victims"""
+def get_ransomware_profile(group_name):
+    """Get detailed profile information for ransomware groups"""
+    profiles = {
+        "LockBit": {
+            "description": "LockBit is one of the most prolific ransomware-as-a-service (RaaS) operations, known for fast encryption and double extortion tactics.",
+            "first_seen": "2019",
+            "type": "Ransomware-as-a-Service (RaaS)",
+            "tactics": ["Double extortion", "Fast encryption", "Affiliate recruitment"],
+            "targets": ["Healthcare", "Manufacturing", "Government", "Education"],
+            "notable_attacks": ["Accenture (2021)", "Continental AG (2022)", "Boeing supplier (2023)"],
+            "status": "Active"
+        },
+        "ALPHV": {
+            "description": "ALPHV (also known as BlackCat) is a sophisticated ransomware group using Rust programming language for cross-platform attacks.",
+            "first_seen": "2021",
+            "type": "Ransomware-as-a-Service (RaaS)",
+            "tactics": ["Cross-platform attacks", "Triple extortion", "Advanced encryption"],
+            "targets": ["Energy", "Healthcare", "Critical Infrastructure"],
+            "notable_attacks": ["Reddit (2023)", "Western Digital (2023)", "MeridianLink (2023)"],
+            "status": "Active"
+        },
+        "Cl0p": {
+            "description": "Cl0p ransomware group specializes in targeting file transfer applications and mass exploitation campaigns.",
+            "first_seen": "2019",
+            "type": "Ransomware Group",
+            "tactics": ["Supply chain attacks", "Mass exploitation", "Zero-day exploitation"],
+            "targets": ["Financial services", "Manufacturing", "Retail"],
+            "notable_attacks": ["MOVEit Transfer (2023)", "Accellion FTA (2021)", "GoAnywhere (2023)"],
+            "status": "Active"
+        },
+        "BlackBasta": {
+            "description": "BlackBasta is a relatively new but aggressive ransomware group known for targeting large organizations.",
+            "first_seen": "2022",
+            "type": "Ransomware Group",
+            "tactics": ["Big game hunting", "Network infiltration", "Data theft"],
+            "targets": ["Manufacturing", "Construction", "Technology"],
+            "notable_attacks": ["Capita (2023)", "ABB (2022)", "Deutsche Windtechnik (2022)"],
+            "status": "Active"
+        },
+        "Royal": {
+            "description": "Royal ransomware emerged as a successor to Conti, focusing on high-value targets with sophisticated attack methods.",
+            "first_seen": "2022",
+            "type": "Ransomware Group",
+            "tactics": ["Lateral movement", "Privilege escalation", "Custom tools"],
+            "targets": ["Healthcare", "Education", "Communications"],
+            "notable_attacks": ["Dallas city systems (2022)", "Royal Mail (2023)"],
+            "status": "Active"
+        },
+        "Play": {
+            "description": "Play ransomware group focuses on double extortion and has been increasingly active against various sectors.",
+            "first_seen": "2022",
+            "type": "Ransomware Group",
+            "tactics": ["Double extortion", "Targeted attacks", "Social engineering"],
+            "targets": ["Government", "Education", "Healthcare"],
+            "notable_attacks": ["City of Oakland (2023)", "Prudential Financial (2023)"],
+            "status": "Active"
+        },
+        "BianLian": {
+            "description": "BianLian shifted from encryption-based ransomware to pure data theft and extortion tactics.",
+            "first_seen": "2022",
+            "type": "Data Extortion Group",
+            "tactics": ["Data theft", "Extortion without encryption", "Fast deployment"],
+            "targets": ["Healthcare", "Manufacturing", "Professional services"],
+            "notable_attacks": ["Multiple healthcare providers (2023)", "Manufacturing companies (2023)"],
+            "status": "Active"
+        },
+        "Akira": {
+            "description": "Akira ransomware targets both Windows and Linux systems with a focus on enterprise environments.",
+            "first_seen": "2023",
+            "type": "Ransomware Group",
+            "tactics": ["Cross-platform attacks", "Network scanning", "Credential theft"],
+            "targets": ["Education", "Finance", "Real estate"],
+            "notable_attacks": ["Yamaha Motor (2023)", "Multiple educational institutions"],
+            "status": "Active"
+        },
+        "Rhysida": {
+            "description": "Rhysida is an emerging ransomware group that has quickly gained attention for targeting critical infrastructure.",
+            "first_seen": "2023",
+            "type": "Ransomware Group",
+            "tactics": ["Infrastructure targeting", "Healthcare focus", "Data publication"],
+            "targets": ["Healthcare", "Education", "Government"],
+            "notable_attacks": ["Prospect Medical Holdings (2023)", "Multiple hospitals"],
+            "status": "Active"
+        },
+        "Scattered Spider": {
+            "description": "Scattered Spider is known for sophisticated social engineering attacks and targeting cloud environments.",
+            "first_seen": "2022",
+            "type": "Cybercriminal Group",
+            "tactics": ["Social engineering", "Cloud attacks", "SIM swapping"],
+            "targets": ["Gaming", "Hospitality", "Technology"],
+            "notable_attacks": ["MGM Resorts (2023)", "Caesars Entertainment (2023)"],
+            "status": "Active"
+        }
+    }
+    
+    return profiles.get(group_name, {
+        "description": f"Information about {group_name} is being collected. This group has been identified in recent threat intelligence reports.",
+        "first_seen": "Unknown",
+        "type": "Ransomware Group",
+        "tactics": ["Under investigation"],
+        "targets": ["Various sectors"],
+        "notable_attacks": ["Recent activities under analysis"],
+        "status": "Under monitoring"
+    })
+
+def build_ransomware_groups(news_items=None, days_back=45):
+    """Analyze news items to extract ransomware group activity and all related news"""
     if news_items is None:
         news_items = load_news()
     
     # Known ransomware groups and their aliases
     ransomware_groups = {
-        "LockBit": ["lockbit", "lockbit3", "lockbit 3.0"],
+        "LockBit": ["lockbit", "lockbit3", "lockbit 3.0", "lockbit 3"],
         "ALPHV": ["alphv", "blackcat", "black cat"],
         "Cl0p": ["cl0p", "clop"],
         "BlackBasta": ["black basta", "blackbasta"],
@@ -374,7 +479,11 @@ def build_ransomware_groups(news_items=None, days_back=7):
         "Cuba": ["cuba ransomware", "cuba"],
         "Medusa": ["medusa ransomware", "medusa"],
         "Conti": ["conti", "conti team"],
-        "Hive": ["hive ransomware", "hive"]
+        "Hive": ["hive ransomware", "hive"],
+        "Maze": ["maze ransomware", "maze"],
+        "Sodinokibi": ["sodinokibi", "revil", "rEvil"],
+        "Ryuk": ["ryuk", "ryuk ransomware"],
+        "DarkSide": ["darkside", "dark side"]
     }
     
     # Victim extraction patterns
@@ -398,8 +507,12 @@ def build_ransomware_groups(news_items=None, days_back=7):
         summary = item.get('summary_raw', '')
         content = f"{title} {summary}".lower()
         
-        # Check if this is ransomware-related
-        if not any(keyword in content for keyword in ['ransomware', 'ransom', 'encrypted', 'lockbit', 'alphv', 'blackcat']):
+        # Check if this is ransomware-related (broader check)
+        ransomware_keywords = ['ransomware', 'ransom', 'encrypted', 'lockbit', 'alphv', 'blackcat', 
+                              'crypto-locker', 'file encryption', 'ransom payment', 'ransom demand',
+                              'ransomware-as-a-service', 'raas', 'double extortion']
+        
+        if not any(keyword in content for keyword in ransomware_keywords):
             continue
         
         # Find matching ransomware groups
@@ -409,50 +522,69 @@ def build_ransomware_groups(news_items=None, days_back=7):
                     groups_data[group_name] = {
                         'aliases': aliases,
                         'last_seen': item.get('published_dt', datetime.now(timezone.utc)).strftime('%Y-%m-%d'),
-                        'summary': f"Active ransomware group tracked across {days_back} days",
-                        'top_stories': [],
-                        'victims': []
+                        'summary': f"Ransomware group tracked over {days_back} days",
+                        'all_stories': [],  # All news mentioning the group
+                        'attack_stories': [],  # Stories specifically about attacks/victims
+                        'victims': [],
+                        'activity_score': 0
                     }
                 
-                # Add this story
+                # Categorize the story
                 story = {
                     'title': title,
                     'link': item.get('link', ''),
-                    'published': item.get('published_dt', datetime.now(timezone.utc)).strftime('%Y-%m-%d')
+                    'published': item.get('published_dt', datetime.now(timezone.utc)).strftime('%Y-%m-%d'),
+                    'summary': summary[:200] + "..." if len(summary) > 200 else summary
                 }
                 
-                if story not in groups_data[group_name]['top_stories']:
-                    groups_data[group_name]['top_stories'].append(story)
+                # Add to all stories
+                if story not in groups_data[group_name]['all_stories']:
+                    groups_data[group_name]['all_stories'].append(story)
+                    groups_data[group_name]['activity_score'] += 1
+                
+                # Check if it's an attack story (mentions victims/attacks)
+                attack_keywords = ['attack', 'victim', 'breach', 'compromise', 'encrypt', 'ransom demand']
+                if any(keyword in content for keyword in attack_keywords):
+                    if story not in groups_data[group_name]['attack_stories']:
+                        groups_data[group_name]['attack_stories'].append(story)
+                        groups_data[group_name]['activity_score'] += 2  # Higher weight for attack stories
                 
                 # Update last seen date
                 current_date = item.get('published_dt', datetime.now(timezone.utc)).strftime('%Y-%m-%d')
                 if current_date > groups_data[group_name]['last_seen']:
                     groups_data[group_name]['last_seen'] = current_date
                 
-                # Extract potential victims
-                full_text = f"{title} {summary}"
-                for pattern in victim_patterns:
-                    matches = re.findall(pattern, full_text, re.IGNORECASE)
-                    for match in matches:
-                        victim_name = match.strip()
-                        # Filter out common false positives
-                        if (len(victim_name) > 3 and 
-                            victim_name.lower() not in ['the company', 'the organization', 'the victim', 'their data'] and
-                            not victim_name.lower().startswith(('this', 'that', 'these', 'those', 'some', 'many'))):
-                            
-                            victim = {
-                                'name': victim_name,
-                                'date': current_date,
-                                'source': item.get('link', '')
-                            }
-                            
-                            # Avoid duplicates
-                            if victim not in groups_data[group_name]['victims']:
-                                groups_data[group_name]['victims'].append(victim)
+                # Extract potential victims from attack stories
+                if any(keyword in content for keyword in attack_keywords):
+                    full_text = f"{title} {summary}"
+                    for pattern in victim_patterns:
+                        matches = re.findall(pattern, full_text, re.IGNORECASE)
+                        for match in matches:
+                            victim_name = match.strip()
+                            # Filter out common false positives
+                            if (len(victim_name) > 3 and 
+                                victim_name.lower() not in ['the company', 'the organization', 'the victim', 'their data'] and
+                                not victim_name.lower().startswith(('this', 'that', 'these', 'those', 'some', 'many'))):
+                                
+                                victim = {
+                                    'name': victim_name,
+                                    'date': current_date,
+                                    'source': item.get('link', '')
+                                }
+                                
+                                # Avoid duplicates
+                                if victim not in groups_data[group_name]['victims']:
+                                    groups_data[group_name]['victims'].append(victim)
     
-    # Limit stories and victims per group
+    # Limit stories and victims per group, sort by date
     for group_name in groups_data:
-        groups_data[group_name]['top_stories'] = groups_data[group_name]['top_stories'][:5]
+        # Sort all stories by date (newest first)
+        groups_data[group_name]['all_stories'].sort(key=lambda x: x['published'], reverse=True)
+        groups_data[group_name]['attack_stories'].sort(key=lambda x: x['published'], reverse=True)
+        
+        # Limit to most recent
+        groups_data[group_name]['all_stories'] = groups_data[group_name]['all_stories'][:10]
+        groups_data[group_name]['attack_stories'] = groups_data[group_name]['attack_stories'][:5]
         groups_data[group_name]['victims'] = groups_data[group_name]['victims'][:20]
     
     return {
@@ -1440,7 +1572,7 @@ def main():
             st.info("Please check your internet connection and try refreshing the page.")
     
     with tab6:
-        st.subheader("💥 Ransomware Groups Activity")
+        st.subheader("💥 Ransomware Groups Intelligence")
         
         # Ransomware-specific filters in sidebar
         with st.sidebar:
@@ -1449,11 +1581,46 @@ def main():
             
             rw_days = st.slider(
                 "Analysis Window (days)",
-                min_value=3,
-                max_value=30,
-                value=7,
+                min_value=7,
+                max_value=90,
+                value=45,
                 help="Analyze ransomware activity over the last N days"
             )
+            
+            # Group profile selector
+            st.markdown("---")
+            st.markdown("**📋 Group Profiles**")
+            profile_groups = ["Select a group...", "LockBit", "ALPHV", "Cl0p", "BlackBasta", "Royal", 
+                             "Play", "BianLian", "Akira", "Rhysida", "Scattered Spider"]
+            selected_profile = st.selectbox(
+                "View group profile:",
+                profile_groups,
+                help="Select a ransomware group to view detailed profile information"
+            )
+        
+        # Display selected group profile in sidebar
+        if selected_profile != "Select a group...":
+            with st.sidebar:
+                st.markdown("---")
+                profile = get_ransomware_profile(selected_profile)
+                st.markdown(f"### 🔍 {selected_profile} Profile")
+                st.markdown(f"**Description:** {profile['description']}")
+                st.markdown(f"**First Seen:** {profile['first_seen']}")
+                st.markdown(f"**Type:** {profile['type']}")
+                st.markdown(f"**Status:** {profile['status']}")
+                
+                st.markdown("**Primary Tactics:**")
+                for tactic in profile['tactics']:
+                    st.write(f"• {tactic}")
+                
+                st.markdown("**Common Targets:**")
+                for target in profile['targets']:
+                    st.write(f"• {target}")
+                
+                if profile.get('notable_attacks'):
+                    st.markdown("**Notable Attacks:**")
+                    for attack in profile['notable_attacks'][:3]:
+                        st.write(f"• {attack}")
         
         try:
             with st.spinner("Analyzing ransomware group activity..."):
@@ -1474,78 +1641,182 @@ def main():
                 st.caption(f"Analyzed {len(news_items)} news articles from the last {rw_days} days")
             else:
                 # Summary metrics
-                col1, col2, col3 = st.columns(3)
+                col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     st.metric("🎯 Active Groups", len(groups))
                 with col2:
                     total_victims = sum(len(group.get('victims', [])) for group in groups.values())
-                    st.metric("🏢 Potential Victims", total_victims)
+                    st.metric("🏢 Victims Identified", total_victims)
                 with col3:
-                    total_stories = sum(len(group.get('top_stories', [])) for group in groups.values())
-                    st.metric("📰 Related Stories", total_stories)
+                    total_stories = sum(len(group.get('all_stories', [])) for group in groups.values())
+                    st.metric("📰 Total Coverage", total_stories)
+                with col4:
+                    total_attacks = sum(len(group.get('attack_stories', [])) for group in groups.values())
+                    st.metric("🚨 Attack Reports", total_attacks)
                 
                 # Storage status
                 storage_status = "💾 SQLite" if saved_to_db else "🧠 In-Memory"
-                st.caption(f"Last updated: {last_updated} • Storage: {storage_status}")
+                st.caption(f"Last updated: {last_updated} • Storage: {storage_status} • Analysis period: {rw_days} days")
                 
                 st.markdown("---")
                 
-                # Sort groups by activity (last seen date and victim count)
+                # TOP SECTION: Ransomware Group Cards
+                st.markdown("### 🃏 Top Ransomware Groups")
+                st.caption("Click on group names in the sidebar 'Group Profiles' section to view detailed information")
+                
+                # Sort groups by activity score and recent activity
                 sorted_groups = sorted(
                     groups.items(), 
-                    key=lambda kv: (kv[1].get("last_seen", ""), len(kv[1].get("victims", []))), 
+                    key=lambda kv: (kv[1].get("activity_score", 0), kv[1].get("last_seen", "")), 
                     reverse=True
                 )
                 
-                # Display group cards
-                for group_name, group_data in sorted_groups:
-                    with st.container():
-                        # Group header
-                        last_seen = group_data.get('last_seen', 'Unknown')
-                        victim_count = len(group_data.get('victims', []))
-                        story_count = len(group_data.get('top_stories', []))
-                        
-                        st.markdown(f"### 💀 {group_name}")
-                        
-                        # Quick stats
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.caption(f"📅 Last seen: **{last_seen}**")
-                        with col2:
-                            st.caption(f"🏢 Victims: **{victim_count}**")
-                        with col3:
-                            st.caption(f"📰 Stories: **{story_count}**")
-                        
-                        # Aliases
-                        if group_data.get('aliases'):
-                            aliases_text = ", ".join(group_data['aliases'][:3])  # Show max 3 aliases
-                            st.caption(f"Also known as: {aliases_text}")
-                        
-                        # Top stories (always visible)
-                        if group_data.get('top_stories'):
-                            st.markdown("**Recent Activity:**")
-                            for story in group_data['top_stories'][:3]:  # Show max 3 stories
-                                st.write(f"• [{story['title']}]({story['link']}) - {story['published']}")
-                        
-                        # Victims (expandable)
-                        if group_data.get('victims'):
-                            with st.expander(f"📋 Recent Victims ({len(group_data['victims'])})"):
-                                for victim in group_data['victims'][:15]:  # Show max 15 victims
-                                    if victim.get('source'):
-                                        st.write(f"• **{victim['name']}** - {victim['date']} - [source]({victim['source']})")
-                                    else:
-                                        st.write(f"• **{victim['name']}** - {victim['date']}")
+                # Display top groups in a grid of cards
+                top_groups = sorted_groups[:6]  # Show top 6 groups
+                
+                if len(top_groups) >= 3:
+                    # Display in rows of 3
+                    for i in range(0, len(top_groups), 3):
+                        cols = st.columns(3)
+                        for j, (group_name, group_data) in enumerate(top_groups[i:i+3]):
+                            with cols[j]:
+                                # Create clickable card-like container
+                                profile_available = group_name in ["LockBit", "ALPHV", "Cl0p", "BlackBasta", "Royal", 
+                                                                 "Play", "BianLian", "Akira", "Rhysida", "Scattered Spider"]
+                                profile_indicator = "🔍" if profile_available else "ℹ️"
                                 
-                                if len(group_data['victims']) > 15:
-                                    st.caption(f"... and {len(group_data['victims']) - 15} more victims")
+                                # Create card with click instruction
+                                st.markdown(f"""
+                                <div style="
+                                    border: 1px solid #ddd; 
+                                    border-radius: 8px; 
+                                    padding: 16px; 
+                                    margin: 8px 0;
+                                    background-color: #f8f9fa;
+                                    min-height: 150px;
+                                ">
+                                    <h4 style="margin-top: 0; color: #dc3545;">💀 {group_name} {profile_indicator}</h4>
+                                    <p style="margin: 4px 0;"><strong>Last seen:</strong> {group_data.get('last_seen', 'Unknown')}</p>
+                                    <p style="margin: 4px 0;"><strong>Activity:</strong> {group_data.get('activity_score', 0)} mentions</p>
+                                    <p style="margin: 4px 0;"><strong>Victims:</strong> {len(group_data.get('victims', []))}</p>
+                                    <p style="margin: 4px 0;"><strong>Stories:</strong> {len(group_data.get('all_stories', []))}</p>
+                                    <p style="font-size: 0.8em; color: #666; margin-top: 8px;">
+                                        {"Click in sidebar to view profile 🔍" if profile_available else "Profile data being collected ℹ️"}
+                                    </p>
+                                </div>
+                                """, unsafe_allow_html=True)
+                else:
+                    # Display in single row if fewer than 3
+                    cols = st.columns(len(top_groups))
+                    for j, (group_name, group_data) in enumerate(top_groups):
+                        with cols[j]:
+                            profile_available = group_name in ["LockBit", "ALPHV", "Cl0p", "BlackBasta", "Royal", 
+                                                             "Play", "BianLian", "Akira", "Rhysida", "Scattered Spider"]
+                            profile_indicator = "🔍" if profile_available else "ℹ️"
+                            
+                            st.markdown(f"""
+                            <div style="
+                                border: 1px solid #ddd; 
+                                border-radius: 8px; 
+                                padding: 16px; 
+                                margin: 8px 0;
+                                background-color: #f8f9fa;
+                            ">
+                                <h4 style="margin-top: 0; color: #dc3545;">💀 {group_name} {profile_indicator}</h4>
+                                <p><strong>Last seen:</strong> {group_data.get('last_seen', 'Unknown')}</p>
+                                <p><strong>Activity:</strong> {group_data.get('activity_score', 0)} mentions</p>
+                                <p><strong>Victims:</strong> {len(group_data.get('victims', []))}</p>
+                                <p style="font-size: 0.8em; color: #666;">
+                                    {"Click in sidebar 🔍" if profile_available else "Profile pending ℹ️"}
+                                </p>
+                            </div>
+                            """, unsafe_allow_html=True)
+                
+                st.markdown("---")
+                
+                # BOTTOM SECTION: Detailed News and Analysis
+                st.markdown("### 📰 Ransomware News & Intelligence")
+                
+                # Display detailed group information
+                for group_name, group_data in sorted_groups:
+                    profile_available = group_name in ["LockBit", "ALPHV", "Cl0p", "BlackBasta", "Royal", 
+                                                     "Play", "BianLian", "Akira", "Rhysida", "Scattered Spider"]
+                    profile_indicator = " 🔍" if profile_available else ""
+                    
+                    with st.expander(f"🔍 {group_name}{profile_indicator} - Detailed Analysis ({group_data.get('activity_score', 0)} mentions)"):
                         
-                        st.markdown("---")
+                        # Add profile link reminder
+                        if profile_available:
+                            st.info(f"💡 **Tip:** Select '{group_name}' in the sidebar 'Group Profiles' section for detailed threat intelligence.")
+                        
+                        # Group overview
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.markdown("**Group Information:**")
+                            st.write(f"• **Last Activity:** {group_data.get('last_seen', 'Unknown')}")
+                            st.write(f"• **Total Mentions:** {group_data.get('activity_score', 0)}")
+                            st.write(f"• **Known Victims:** {len(group_data.get('victims', []))}")
+                            
+                            # Aliases
+                            if group_data.get('aliases'):
+                                aliases = ", ".join(group_data['aliases'][:5])
+                                st.write(f"• **Also Known As:** {aliases}")
+                        
+                        with col2:
+                            st.markdown("**Coverage Breakdown:**")
+                            st.write(f"• **All News Stories:** {len(group_data.get('all_stories', []))}")
+                            st.write(f"• **Attack Reports:** {len(group_data.get('attack_stories', []))}")
+                            st.write(f"• **Victim Reports:** {len(group_data.get('victims', []))}")
+                        
+                        # Recent news (all stories about this group)
+                        if group_data.get('all_stories'):
+                            st.markdown("**📰 Recent News Coverage:**")
+                            for story in group_data['all_stories'][:5]:
+                                st.write(f"• [{story['title']}]({story['link']}) - {story['published']}")
+                                if story.get('summary'):
+                                    st.caption(f"   {story['summary']}")
+                        
+                        # Attack-specific stories
+                        if group_data.get('attack_stories'):
+                            st.markdown("**🚨 Recent Attack Reports:**")
+                            for story in group_data['attack_stories'][:3]:
+                                st.write(f"• [{story['title']}]({story['link']}) - {story['published']}")
+                                if story.get('summary'):
+                                    st.caption(f"   {story['summary']}")
+                        
+                        # Victims section
+                        if group_data.get('victims'):
+                            st.markdown("**🏢 Recent Victims:**")
+                            victim_cols = st.columns(2)
+                            for idx, victim in enumerate(group_data['victims'][:10]):
+                                col = victim_cols[idx % 2]
+                                with col:
+                                    if victim.get('source'):
+                                        st.write(f"• **{victim['name']}** ({victim['date']}) - [source]({victim['source']})")
+                                    else:
+                                        st.write(f"• **{victim['name']}** ({victim['date']})")
+                            
+                            if len(group_data['victims']) > 10:
+                                st.caption(f"... and {len(group_data['victims']) - 10} more victims")
+                
+                # Show remaining groups if any
+                if len(sorted_groups) > 6:
+                    with st.expander(f"📋 Other Active Groups ({len(sorted_groups) - 6} more)"):
+                        for group_name, group_data in sorted_groups[6:]:
+                            profile_available = group_name in ["LockBit", "ALPHV", "Cl0p", "BlackBasta", "Royal", 
+                                                             "Play", "BianLian", "Akira", "Rhysida", "Scattered Spider"]
+                            profile_indicator = " 🔍" if profile_available else ""
+                            
+                            st.write(f"• **{group_name}{profile_indicator}** - Last seen: {group_data.get('last_seen', 'Unknown')} "
+                                   f"({group_data.get('activity_score', 0)} mentions, "
+                                   f"{len(group_data.get('victims', []))} victims)")
                 
                 # Disclaimer
+                st.markdown("---")
                 st.info("""
-                ⚠️ **Disclaimer**: This analysis is based on automated parsing of cybersecurity news feeds. 
-                Victim identification may include false positives. Always verify information through official sources 
-                before taking action.
+                ⚠️ **Intelligence Disclaimer**: This analysis is based on automated parsing of cybersecurity news feeds. 
+                Information may include false positives and should be verified through official sources. 
+                This tool is designed to provide situational awareness for threat intelligence purposes.
                 """)
                     
         except Exception as e:
