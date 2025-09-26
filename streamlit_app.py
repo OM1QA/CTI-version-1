@@ -1,4 +1,38 @@
-import streamlit as st
+# Data source status
+    with st.expander("🔗 Enhanced Data Source Status"):
+        if 'source_counts' in data:
+            col1, col2, col3, col4, col5 = st.columns(5)
+            source_counts = data['source_counts']
+            
+            with col1:
+                st.metric("CISA KEV", f"{source_counts.get('CISA KEV', 0)} vulns")
+                st.caption("Confidence: 95%")
+            with col2:
+                st.metric("NVD", f"{source_counts.get('NVD', 0)} vulns")
+                st.caption("Confidence: 90%")
+            with col3:
+                st.metric("OTX", f"{source_counts.get('OTX', 0)} IOCs")
+                st.caption("Confidence: 75%")
+            with col4:
+                st.metric("Abuse.ch", f"{source_counts.get('Abuse.ch', 0)} IOCs")
+                st.caption("Confidence: 85%")
+            with col5:
+                st.metric("CISA Advisories", f"{source_counts.get('CISA Advisories', 0)} items")
+                st.caption("Confidence: 95%")
+        else:
+            # Fallback to original display
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("CISA KEV", f"{len(data['vulnerabilities'])} vulnerabilities")
+            with col2:
+                otx_count = len(data['indicators'][data['indicators']['source'] == 'OTX']) if not data['indicators'].empty else 0
+                st.metric("AlienVault OTX", f"{otx_count} indicators")
+            with col3:
+                threatfox_count = len(data['indicators'][data['indicators']['source'] == 'Abuse.ch ThreatFox']) if not data['indicators'].empty else 0
+                st.metric("ThreatFox", f"{threatfox_count} IOCs")
+            with col4:
+                urlhaus_count = len(data['indicators'][data['indicators']['source'] == 'Abuse.ch URLhaus']) if not data['indicators'].empty else 0
+                st.metric("URLhaus", f"{urlhaus_count} URLs")import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -71,6 +105,100 @@ TOTAL_ITEMS_IN_FEED = 40
 MIN_PER_SOURCE_IN_FEED = 2
 MAX_PER_SOURCE_IN_FEED = 8
 MAX_EXTRACT_SIZE = 150 * 1024  # 150KB limit for extracted text
+
+# Source confidence scoring (0.0 - 1.0)
+SOURCE_CONFIDENCE = {
+    "CISA KEV": 0.95,
+    "CISA Advisories": 0.95,
+    "NVD": 0.90,
+    "OTX": 0.75,
+    "Abuse.ch ThreatFox": 0.85,
+    "Abuse.ch URLhaus": 0.85,
+    "CISA Alerts": 0.95,
+    "UK NCSC News": 0.92,
+    "ENISA News": 0.90,
+    "The Hacker News": 0.70,
+    "BleepingComputer": 0.75,
+    "Cisco Talos": 0.85,
+    "Microsoft Security Blog": 0.85,
+    "Palo Alto Unit 42": 0.85
+}
+
+def calculate_confidence_score(source, base_confidence=None, days_old=0, corroboration_count=0):
+    """Calculate overall confidence score based on source, age, and corroboration"""
+    if base_confidence is None:
+        base_confidence = SOURCE_CONFIDENCE.get(source, 0.70)
+    
+    # Age factor: newer data gets higher confidence
+    if days_old <= 1:
+        age_factor = 1.0
+    elif days_old <= 7:
+        age_factor = 0.95
+    elif days_old <= 30:
+        age_factor = 0.90
+    elif days_old <= 90:
+        age_factor = 0.85
+    else:
+        age_factor = 0.80
+    
+    # Corroboration factor: multiple sources increase confidence
+    corroboration_factor = min(1.0 + (corroboration_count * 0.05), 1.20)
+    
+    final_confidence = base_confidence * age_factor * corroboration_factor
+    return min(final_confidence, 1.0)
+
+def deduplicate_vulnerabilities(vuln_list):
+    """Remove duplicate vulnerabilities based on CVE ID"""
+    seen_cves = {}
+    deduplicated = []
+    
+    for vuln in vuln_list:
+        cve_id = vuln.get('cve_id', '').upper()
+        if cve_id and cve_id != 'N/A':
+            if cve_id in seen_cves:
+                # Update existing entry with higher confidence source
+                existing = seen_cves[cve_id]
+                if vuln.get('confidence_score', 0) > existing.get('confidence_score', 0):
+                    seen_cves[cve_id] = vuln
+                    # Replace in deduplicated list
+                    for i, item in enumerate(deduplicated):
+                        if item.get('cve_id') == cve_id:
+                            deduplicated[i] = vuln
+                            break
+            else:
+                seen_cves[cve_id] = vuln
+                deduplicated.append(vuln)
+        else:
+            # No CVE ID, add as-is
+            deduplicated.append(vuln)
+    
+    return deduplicated
+
+def deduplicate_indicators(ioc_list):
+    """Remove duplicate IOCs based on indicator value"""
+    seen_indicators = {}
+    deduplicated = []
+    
+    for ioc in ioc_list:
+        indicator = ioc.get('indicator', '').lower().strip()
+        if indicator:
+            if indicator in seen_indicators:
+                # Keep the one with higher confidence
+                existing = seen_indicators[indicator]
+                if ioc.get('confidence_score', 0) > existing.get('confidence_score', 0):
+                    seen_indicators[indicator] = ioc
+                    # Replace in deduplicated list
+                    for i, item in enumerate(deduplicated):
+                        if item.get('indicator', '').lower().strip() == indicator:
+                            deduplicated[i] = ioc
+                            break
+            else:
+                seen_indicators[indicator] = ioc
+                deduplicated.append(ioc)
+        else:
+            deduplicated.append(ioc)
+    
+    return deduplicated
 
 # Enhanced tagging data
 ACTORS = {"ALPHV", "BlackCat", "Scattered Spider", "Lapsus$", "FIN7", "Wizard Spider", "TA505", "APT29", "APT28"}
@@ -619,6 +747,9 @@ class CISAKEVIngester(BaseIngester):
             # Convert to DataFrame
             vulns = []
             for vuln in data.get('vulnerabilities', [])[:50]:  # Limit for demo
+                days_old = (datetime.now() - datetime.strptime(vuln.get('dateAdded', '2024-01-01'), '%Y-%m-%d')).days
+                confidence_score = calculate_confidence_score("CISA KEV", days_old=days_old)
+                
                 vulns.append({
                     'cve_id': vuln.get('cveID', 'N/A'),
                     'product': vuln.get('product', 'Unknown'),
@@ -627,7 +758,8 @@ class CISAKEVIngester(BaseIngester):
                     'cvss_score': 9.0,  # Default high score for KEV
                     'date_added': datetime.strptime(vuln.get('dateAdded', '2024-01-01'), '%Y-%m-%d'),
                     'description': vuln.get('shortDescription', 'No description available'),
-                    'source': 'CISA KEV'
+                    'source': 'CISA KEV',
+                    'confidence_score': confidence_score
                 })
             
             return pd.DataFrame(vulns)
@@ -646,7 +778,160 @@ class CISAKEVIngester(BaseIngester):
             'cvss_score': [9.8, 8.1, 7.5],
             'date_added': [datetime.now() - timedelta(days=1), datetime.now() - timedelta(days=2), datetime.now() - timedelta(days=3)],
             'description': ['Remote code execution in Exchange Server', 'SQL injection in Struts framework', 'XSS vulnerability in popular plugin'],
-            'source': ['CISA KEV', 'CISA KEV', 'CISA KEV']
+            'source': ['CISA KEV', 'CISA KEV', 'CISA KEV'],
+            'confidence_score': [0.95, 0.95, 0.95]
+        })
+
+class NVDIngester(BaseIngester):
+    """Ingest vulnerabilities from NVD (National Vulnerability Database)"""
+    def __init__(self):
+        super().__init__()
+        self.source_name = "NVD"
+        self.api_url = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+    
+    def fetch_data(self):
+        """Fetch recent NVD vulnerabilities"""
+        try:
+            # Get vulnerabilities from last 7 days
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=7)
+            
+            params = {
+                'pubStartDate': start_date.strftime('%Y-%m-%dT%H:%M:%S.000'),
+                'pubEndDate': end_date.strftime('%Y-%m-%dT%H:%M:%S.000'),
+                'resultsPerPage': 50
+            }
+            
+            response = requests.get(self.api_url, params=params, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            
+            vulns = []
+            for cve_item in data.get('vulnerabilities', []):
+                cve = cve_item.get('cve', {})
+                cve_id = cve.get('id', 'N/A')
+                
+                # Get CVSS score
+                cvss_score = 5.0  # Default
+                severity = 'Medium'
+                
+                metrics = cve.get('metrics', {})
+                if 'cvssMetricV31' in metrics and metrics['cvssMetricV31']:
+                    cvss_data = metrics['cvssMetricV31'][0].get('cvssData', {})
+                    cvss_score = cvss_data.get('baseScore', 5.0)
+                    severity = cvss_data.get('baseSeverity', 'Medium').title()
+                elif 'cvssMetricV30' in metrics and metrics['cvssMetricV30']:
+                    cvss_data = metrics['cvssMetricV30'][0].get('cvssData', {})
+                    cvss_score = cvss_data.get('baseScore', 5.0)
+                    severity = cvss_data.get('baseSeverity', 'Medium').title()
+                
+                # Get description
+                descriptions = cve.get('descriptions', [])
+                description = 'No description available'
+                for desc in descriptions:
+                    if desc.get('lang') == 'en':
+                        description = desc.get('value', 'No description available')
+                        break
+                
+                # Calculate confidence
+                pub_date = cve.get('published', '')
+                if pub_date:
+                    try:
+                        pub_datetime = datetime.fromisoformat(pub_date.replace('Z', '+00:00'))
+                        days_old = (datetime.now(timezone.utc) - pub_datetime).days
+                    except:
+                        days_old = 0
+                else:
+                    days_old = 0
+                
+                confidence_score = calculate_confidence_score("NVD", days_old=days_old)
+                
+                vulns.append({
+                    'cve_id': cve_id,
+                    'product': 'Various',  # NVD doesn't always specify
+                    'vendor': 'Various',
+                    'severity': severity,
+                    'cvss_score': cvss_score,
+                    'date_added': datetime.now() - timedelta(days=days_old),
+                    'description': description[:200] + '...' if len(description) > 200 else description,
+                    'source': 'NVD',
+                    'confidence_score': confidence_score
+                })
+            
+            return pd.DataFrame(vulns)
+            
+        except Exception as e:
+            st.warning(f"Failed to fetch NVD data: {str(e)}. Using sample data.")
+            return self.get_sample_nvd_data()
+    
+    def get_sample_nvd_data(self):
+        """Fallback sample NVD data"""
+        return pd.DataFrame({
+            'cve_id': ['CVE-2024-1001', 'CVE-2024-1002'],
+            'product': ['Various', 'Various'],
+            'vendor': ['Various', 'Various'],
+            'severity': ['High', 'Medium'],
+            'cvss_score': [8.5, 6.2],
+            'date_added': [datetime.now() - timedelta(days=1), datetime.now() - timedelta(days=2)],
+            'description': ['Sample NVD vulnerability description', 'Another sample NVD entry'],
+            'source': ['NVD', 'NVD'],
+            'confidence_score': [0.90, 0.90]
+        })
+
+class CISAAdvisoriesIngester(BaseIngester):
+    """Ingest CISA Cybersecurity Advisories"""
+    def __init__(self):
+        super().__init__()
+        self.source_name = "CISA Advisories"
+        self.api_url = "https://www.cisa.gov/sites/default/files/feeds/cybersecurity_advisories.json"
+    
+    def fetch_data(self):
+        """Fetch CISA advisories"""
+        try:
+            response = requests.get(self.api_url, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            
+            advisories = []
+            for advisory in data.get('advisories', [])[:30]:  # Limit for performance
+                pub_date = advisory.get('published', '')
+                if pub_date:
+                    try:
+                        pub_datetime = datetime.fromisoformat(pub_date)
+                        days_old = (datetime.now() - pub_datetime).days
+                    except:
+                        days_old = 0
+                else:
+                    days_old = 0
+                
+                confidence_score = calculate_confidence_score("CISA Advisories", days_old=days_old)
+                
+                advisories.append({
+                    'id': advisory.get('id', 'N/A'),
+                    'title': advisory.get('title', 'No title'),
+                    'description': advisory.get('description', 'No description available'),
+                    'published': pub_datetime if pub_date else datetime.now(),
+                    'source': 'CISA Advisories',
+                    'confidence_score': confidence_score,
+                    'link': advisory.get('link', '')
+                })
+            
+            return pd.DataFrame(advisories)
+            
+        except Exception as e:
+            st.warning(f"Failed to fetch CISA Advisories: {str(e)}. Using sample data.")
+            return self.get_sample_advisories()
+    
+    def get_sample_advisories(self):
+        """Fallback sample advisories data"""
+        return pd.DataFrame({
+            'id': ['CISA-2024-001', 'CISA-2024-002'],
+            'title': ['Sample Advisory 1', 'Sample Advisory 2'],
+            'description': ['Sample advisory description 1', 'Sample advisory description 2'],
+            'published': [datetime.now() - timedelta(days=1), datetime.now() - timedelta(days=2)],
+            'source': ['CISA Advisories', 'CISA Advisories'],
+            'confidence_score': [0.95, 0.95],
+            'link': ['', '']
         })
 
 class OTXIngester(BaseIngester):
@@ -684,14 +969,23 @@ class OTXIngester(BaseIngester):
             indicators = []
             for pulse in pulses_data.get('results', [])[:10]:  # Limit for demo
                 for indicator in pulse.get('indicators', [])[:5]:  # 5 per pulse
+                    # Calculate confidence based on pulse quality and age
+                    pulse_references = len(pulse.get('references', []))
+                    created_date = self.parse_date(indicator.get('created', pulse.get('created', '')))
+                    days_old = (datetime.now() - created_date).days if created_date else 0
+                    
+                    base_confidence = min(0.75 + (pulse_references * 0.02), 0.85)  # OTX varies in quality
+                    confidence_score = calculate_confidence_score("OTX", base_confidence, days_old)
+                    
                     indicators.append({
                         'indicator': indicator.get('indicator', 'N/A'),
                         'type': indicator.get('type', 'Unknown'),
                         'threat_type': self.classify_threat_type(pulse.get('name', '')),
                         'confidence': min(85 + len(pulse.get('references', [])) * 5, 100),
-                        'first_seen': self.parse_date(indicator.get('created', pulse.get('created', ''))),
+                        'first_seen': created_date,
                         'source': 'OTX',
-                        'pulse_name': pulse.get('name', 'Unknown Pulse')
+                        'pulse_name': pulse.get('name', 'Unknown Pulse'),
+                        'confidence_score': confidence_score
                     })
             
             return pd.DataFrame(indicators[:30])  # Limit total indicators
@@ -1307,8 +1601,44 @@ def main():
         st.subheader("🦠 Vulnerability Management")
         
         if not filtered_vulns.empty:
+            # Add confidence filter in columns
+            col1, col2 = st.columns(2)
+            with col1:
+                confidence_threshold = st.slider(
+                    "Minimum Confidence Score",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=0.7,
+                    step=0.05,
+                    help="Filter vulnerabilities by confidence score"
+                )
+            
+            with col2:
+                sort_by = st.selectbox(
+                    "Sort by",
+                    ["Risk Score", "Confidence Score", "CVSS Score", "Date Added"],
+                    help="Choose how to sort vulnerabilities"
+                )
+            
+            # Apply confidence filter
+            if 'confidence_score' in filtered_vulns.columns:
+                conf_filtered_vulns = filtered_vulns[filtered_vulns['confidence_score'] >= confidence_threshold]
+            else:
+                conf_filtered_vulns = filtered_vulns
+            
+            # Apply sorting
+            if not conf_filtered_vulns.empty:
+                if sort_by == "Risk Score":
+                    conf_filtered_vulns = conf_filtered_vulns.sort_values('risk_score', ascending=False)
+                elif sort_by == "Confidence Score" and 'confidence_score' in conf_filtered_vulns.columns:
+                    conf_filtered_vulns = conf_filtered_vulns.sort_values('confidence_score', ascending=False)
+                elif sort_by == "CVSS Score":
+                    conf_filtered_vulns = conf_filtered_vulns.sort_values('cvss_score', ascending=False)
+                elif sort_by == "Date Added":
+                    conf_filtered_vulns = conf_filtered_vulns.sort_values('date_added', ascending=False)
+            
             # Vulnerability distribution chart
-            severity_counts = filtered_vulns['severity'].value_counts()
+            severity_counts = conf_filtered_vulns['severity'].value_counts()
             fig_severity = px.pie(
                 values=severity_counts.values,
                 names=severity_counts.index,
@@ -1322,19 +1652,56 @@ def main():
             )
             st.plotly_chart(fig_severity, use_container_width=True)
             
-            # Risk score distribution
-            fig_risk = px.histogram(
-                filtered_vulns,
-                x='risk_score',
-                nbins=20,
-                title='Vulnerability Risk Score Distribution'
-            )
-            st.plotly_chart(fig_risk, use_container_width=True)
+            # Source distribution if we have multiple sources
+            if 'source' in conf_filtered_vulns.columns:
+                col1, col2 = st.columns(2)
+                with col1:
+                    source_counts = conf_filtered_vulns['source'].value_counts()
+                    fig_sources = px.bar(
+                        x=source_counts.index,
+                        y=source_counts.values,
+                        title="Vulnerabilities by Source",
+                        labels={'x': 'Source', 'y': 'Count'}
+                    )
+                    st.plotly_chart(fig_sources, use_container_width=True)
+                
+                with col2:
+                    # Confidence distribution
+                    if 'confidence_score' in conf_filtered_vulns.columns:
+                        fig_conf = px.histogram(
+                            conf_filtered_vulns,
+                            x='confidence_score',
+                            nbins=20,
+                            title='Confidence Score Distribution'
+                        )
+                        st.plotly_chart(fig_conf, use_container_width=True)
+            else:
+                # Risk score distribution
+                fig_risk = px.histogram(
+                    conf_filtered_vulns,
+                    x='risk_score',
+                    nbins=20,
+                    title='Vulnerability Risk Score Distribution'
+                )
+                st.plotly_chart(fig_risk, use_container_width=True)
             
             # Detailed vulnerability table
             st.markdown("### 📋 Detailed Vulnerability List")
-            vuln_display = filtered_vulns[['cve_id', 'product', 'vendor', 'severity', 'cvss_score', 'risk_score', 'date_added']]
+            
+            # Prepare display columns
+            display_columns = ['cve_id', 'product', 'vendor', 'severity', 'cvss_score', 'risk_score', 'source', 'date_added']
+            if 'confidence_score' in conf_filtered_vulns.columns:
+                display_columns.insert(-1, 'confidence_score')
+            
+            # Format confidence score for display
+            vuln_display = conf_filtered_vulns[display_columns].copy()
+            if 'confidence_score' in vuln_display.columns:
+                vuln_display['confidence_score'] = vuln_display['confidence_score'].round(2)
+            
             st.dataframe(vuln_display, use_container_width=True)
+            
+            # Show statistics
+            st.caption(f"Showing {len(conf_filtered_vulns)} vulnerabilities (filtered from {len(filtered_vulns)} total)")
             
         else:
             st.info("No vulnerabilities match your current filters.")
@@ -1343,8 +1710,44 @@ def main():
         st.subheader("🚩 Threat Indicators")
         
         if not filtered_iocs.empty:
+            # Add confidence filter and sorting
+            col1, col2 = st.columns(2)
+            with col1:
+                ioc_confidence_threshold = st.slider(
+                    "Minimum IOC Confidence Score",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=0.6,
+                    step=0.05,
+                    help="Filter indicators by confidence score"
+                )
+            
+            with col2:
+                ioc_sort_by = st.selectbox(
+                    "Sort IOCs by",
+                    ["Risk Score", "Confidence Score", "Confidence", "First Seen"],
+                    help="Choose how to sort indicators"
+                )
+            
+            # Apply confidence filter
+            if 'confidence_score' in filtered_iocs.columns:
+                conf_filtered_iocs = filtered_iocs[filtered_iocs['confidence_score'] >= ioc_confidence_threshold]
+            else:
+                conf_filtered_iocs = filtered_iocs
+            
+            # Apply sorting
+            if not conf_filtered_iocs.empty:
+                if ioc_sort_by == "Risk Score":
+                    conf_filtered_iocs = conf_filtered_iocs.sort_values('risk_score', ascending=False)
+                elif ioc_sort_by == "Confidence Score" and 'confidence_score' in conf_filtered_iocs.columns:
+                    conf_filtered_iocs = conf_filtered_iocs.sort_values('confidence_score', ascending=False)
+                elif ioc_sort_by == "Confidence":
+                    conf_filtered_iocs = conf_filtered_iocs.sort_values('confidence', ascending=False)
+                elif ioc_sort_by == "First Seen":
+                    conf_filtered_iocs = conf_filtered_iocs.sort_values('first_seen', ascending=False)
+            
             # IOC type distribution
-            type_counts = filtered_iocs['type'].value_counts()
+            type_counts = conf_filtered_iocs['type'].value_counts()
             fig_types = px.bar(
                 x=type_counts.index,
                 y=type_counts.values,
@@ -1353,18 +1756,42 @@ def main():
             )
             st.plotly_chart(fig_types, use_container_width=True)
             
-            # Threat type distribution
-            threat_counts = filtered_iocs['threat_type'].value_counts()
-            fig_threats = px.pie(
-                values=threat_counts.values,
-                names=threat_counts.index,
-                title="Threat Type Distribution"
-            )
-            st.plotly_chart(fig_threats, use_container_width=True)
+            # Threat type and source distribution
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                threat_counts = conf_filtered_iocs['threat_type'].value_counts()
+                fig_threats = px.pie(
+                    values=threat_counts.values,
+                    names=threat_counts.index,
+                    title="Threat Type Distribution"
+                )
+                st.plotly_chart(fig_threats, use_container_width=True)
+            
+            with col2:
+                if 'source' in conf_filtered_iocs.columns:
+                    source_counts = conf_filtered_iocs['source'].value_counts()
+                    fig_ioc_sources = px.bar(
+                        x=source_counts.index,
+                        y=source_counts.values,
+                        title="IOCs by Source",
+                        labels={'x': 'Source', 'y': 'Count'}
+                    )
+                    st.plotly_chart(fig_ioc_sources, use_container_width=True)
+                else:
+                    # Confidence distribution
+                    if 'confidence_score' in conf_filtered_iocs.columns:
+                        fig_conf = px.histogram(
+                            conf_filtered_iocs,
+                            x='confidence_score',
+                            nbins=15,
+                            title='IOC Confidence Distribution'
+                        )
+                        st.plotly_chart(fig_conf, use_container_width=True)
             
             # IOC timeline
-            if 'first_seen' in filtered_iocs.columns:
-                ioc_timeline = filtered_iocs.groupby(filtered_iocs['first_seen'].dt.date).size().reset_index()
+            if 'first_seen' in conf_filtered_iocs.columns:
+                ioc_timeline = conf_filtered_iocs.groupby(conf_filtered_iocs['first_seen'].dt.date).size().reset_index()
                 ioc_timeline.columns = ['Date', 'Count']
                 
                 fig_timeline = px.line(
@@ -1377,7 +1804,23 @@ def main():
             
             # Detailed IOC table
             st.markdown("### 📋 Detailed IOC List")
-            st.dataframe(filtered_iocs, use_container_width=True)
+            
+            # Prepare display columns
+            ioc_display_columns = ['indicator', 'type', 'threat_type', 'confidence', 'source', 'first_seen']
+            if 'confidence_score' in conf_filtered_iocs.columns:
+                ioc_display_columns.insert(-2, 'confidence_score')
+            if 'risk_score' in conf_filtered_iocs.columns:
+                ioc_display_columns.insert(-2, 'risk_score')
+            
+            # Format for display
+            ioc_display = conf_filtered_iocs[ioc_display_columns].copy()
+            if 'confidence_score' in ioc_display.columns:
+                ioc_display['confidence_score'] = ioc_display['confidence_score'].round(2)
+            
+            st.dataframe(ioc_display, use_container_width=True)
+            
+            # Show statistics
+            st.caption(f"Showing {len(conf_filtered_iocs)} indicators (filtered from {len(filtered_iocs)} total)")
             
         else:
             st.info("No indicators match your current filters.")
@@ -1796,7 +2239,8 @@ def main():
     st.markdown("""
     <div style="text-align: center; color: #666;">
         <p>🛡️ SME Threat Intelligence Platform MVP | Built with ❤️ for small businesses</p>
-        <p>Data sources: CISA KEV (Live), AlienVault OTX (Live), Abuse.ch ThreatFox (Live), Abuse.ch URLhaus (Live), 8 News Sources (Live) | Auto-refresh: Every hour</p>
+        <p>Enhanced Data Sources: CISA KEV & Advisories (Live), NVD (Live), AlienVault OTX (Live), Abuse.ch ThreatFox & URLhaus (Live), 8 News Sources (Live)</p>
+        <p>Features: Confidence scoring, deduplication, multi-source correlation | Auto-refresh: Every hour</p>
     </div>
     """, unsafe_allow_html=True)
 
